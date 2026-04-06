@@ -1,0 +1,35 @@
+{{- if .Values.backend.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "contract-agent.fullname" . }}-backend
+  labels:
+    {{- include "contract-agent.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.backend.service.type }}
+  ports:
+    - port: {{ .Values.backend.service.port }}
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  selector:
+    app: contract-agent-backend
+---
+{{- end }}
+{{- if .Values.frontend.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "contract-agent.fullname" . }}-frontend
+  labels:
+    {{- include "contract-agent.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.frontend.service.type }}
+  ports:
+    - port: {{ .Values.frontend.service.port }}
+      targetPort: 80
+      protocol: TCP
+      name: http
+  selector:
+    app: contract-agent-frontend
+{{- end }}

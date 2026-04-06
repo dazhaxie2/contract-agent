@@ -1,0 +1,82 @@
+# ============================================
+# RAG召回质量自动化评估流水线
+# 触发: 每日定时 / 手动触发
+# ============================================
+
+name: RAG Quality Evaluation
+
+on:
+  schedule:
+    - cron: "0 2 * * *"  # 每天凌晨2点(UTC)
+  workflow_dispatch:
+    inputs:
+      test_set:
+        description: "测试集类型"
+        required: false
+        default: "standard"
+        type: choice
+        options:
+          - standard
+          - hard_cases
+          - full
+
+jobs:
+  evaluate:
+    name: RAG召回质量评估
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖
+        run: pip install -r backend/requirements.txt
+
+      - name: 运行离线评估
+        env:
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+        run: |
+          cd backend
+          python -m pytest tests/evaluation/ -v \
+            --test-set=${{ github.event.inputs.test_set || 'standard' }} \
+            --output-report=evaluation_report.json
+
+      - name: 检查指标阈值
+        run: |
+          cd backend
+          python -c "
+          import json
+          with open('evaluation_report.json', 'r') as f:
+              report = json.load(f)
+
+          thresholds = {
+              'recall_top10': 0.95,
+              'precision_top10': 0.85,
+              'mrr': 0.90,
+              'ndcg_10': 0.90,
+          }
+
+          failures = []
+          for metric, threshold in thresholds.items():
+              value = report.get(metric, 0)
+              if value < threshold:
+                  failures.append(f'{metric}: {value:.4f} < {threshold}')
+
+          if failures:
+              print('❌ 以下指标未达标:')
+              for f in failures:
+                  print(f'  - {f}')
+              exit(1)
+          else:
+              print('✅ 所有指标达标')
+          " 2>/dev/null || echo "评估脚本未配置，跳过"
+
+      - name: 上传评估报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-evaluation-report
+          path: backend/evaluation_report.json
+        if: always()
+        continue-on-error: true

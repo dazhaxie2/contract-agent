@@ -1,0 +1,152 @@
+# 合同合规Agent系统 - 后端Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: contract-agent
+  labels:
+    app.kubernetes.io/name: contract-agent
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1          # 滚动更新时最多多出1个Pod
+      maxUnavailable: 0     # 更新期间不允许不可用
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: contract-agent
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: contract-agent
+        app.kubernetes.io/component: backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: contract-agent
+      # 安全上下文
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      # 反亲和性：将Pod分散到不同节点
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/component
+                      operator: In
+                      values:
+                        - backend
+                topologyKey: kubernetes.io/hostname
+      # 优雅终止等待时间
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: backend
+          image: ghcr.io/contract-agent/backend:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          # 资源限制
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          # 存活探针：检测进程是否存活
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # 就绪探针：检测是否可以接收流量
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # 启动探针：给予足够的启动时间
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          # 环境变量 - 从ConfigMap引用
+          envFrom:
+            - configMapRef:
+                name: contract-agent-config
+          # 环境变量 - 从Secret引用
+          env:
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: contract-agent-secret
+                  key: DATABASE_PASSWORD
+            - name: DATABASE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: contract-agent-secret
+                  key: DATABASE_USER
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: contract-agent-secret
+                  key: REDIS_PASSWORD
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: contract-agent-secret
+                  key: MINIO_ACCESS_KEY
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: contract-agent-secret
+                  key: MINIO_SECRET_KEY
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: contract-agent-secret
+                  key: JWT_SECRET_KEY
+            - name: DASHSCOPE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: contract-agent-secret
+                  key: DASHSCOPE_API_KEY
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://$(DATABASE_USER):$(DATABASE_PASSWORD)@$(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)"
+          # 容器安全上下文
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          # 临时目录挂载（只读根文件系统需要）
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

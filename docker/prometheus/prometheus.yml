@@ -1,0 +1,34 @@
+# Prometheus采集配置 - 合同合规Agent系统
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # 后端FastAPI指标
+  - job_name: "contract-agent-backend"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["backend:8000"]
+        labels:
+          service: "backend"
+          environment: "development"
+
+  # Prometheus自身
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Milvus指标
+  - job_name: "milvus"
+    static_configs:
+      - targets: ["milvus:9091"]
+        labels:
+          service: "milvus"
+
+  # Redis指标 (需要redis-exporter)
+  - job_name: "redis"
+    static_configs:
+      - targets: ["redis:6379"]
+        labels:
+          service: "redis"

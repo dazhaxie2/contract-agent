@@ -1,0 +1,162 @@
+# 合同合规Agent系统 - Helm Values
+# 全局配置
+global:
+  environment: production
+  namespace: contract-agent
+  imagePullPolicy: IfNotPresent
+
+# ==================== 后端服务 ====================
+backend:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: ghcr.io/contract-agent/backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8000
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilization: 70
+    targetMemoryUtilization: 80
+  env:
+    ENVIRONMENT: production
+    LOG_LEVEL: INFO
+    WORKERS: "4"
+    LLM_GENERATION_MODEL: qwen-max
+    LLM_LIGHT_MODEL: qwen-plus
+    LLM_EMBEDDING_MODEL: text-embedding-v3
+    LLM_RERANKER_MODEL: gte-rerank
+    LLM_MAX_CONCURRENT: "50"
+    RAG_ENABLE_SELF_RAG: "true"
+    RAG_ENABLE_CRAG: "true"
+    TRACING_ENABLED: "true"
+    PROMETHEUS_ENABLED: "true"
+    RATE_LIMIT_ENABLED: "true"
+    CIRCUIT_BREAKER_ENABLED: "true"
+  # 探针配置
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 30
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 8000
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  # Pod反亲和
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app
+                  operator: In
+                  values: ["contract-agent-backend"]
+            topologyKey: kubernetes.io/hostname
+
+# ==================== 前端服务 ====================
+frontend:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: ghcr.io/contract-agent/frontend
+    tag: latest
+  service:
+    type: ClusterIP
+    port: 80
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ==================== Ingress ====================
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/limit-connections: "50"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: contract-agent.example.com
+      paths:
+        - path: /api
+          pathType: Prefix
+          service: backend
+        - path: /
+          pathType: Prefix
+          service: frontend
+  tls:
+    - secretName: contract-agent-tls
+      hosts:
+        - contract-agent.example.com
+
+# ==================== 数据库 ====================
+postgresql:
+  enabled: true
+  auth:
+    database: contract_agent
+    username: contract_agent
+  primary:
+    persistence:
+      size: 100Gi
+  readReplicas:
+    replicaCount: 2
+
+redis:
+  enabled: true
+  architecture: replication
+  replica:
+    replicaCount: 2
+
+# ==================== 监控 ====================
+monitoring:
+  enabled: true
+  prometheus:
+    enabled: true
+  grafana:
+    enabled: true
+  jaeger:
+    enabled: true
+
+# ==================== 安全 ====================
+serviceAccount:
+  create: true
+  name: contract-agent
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]

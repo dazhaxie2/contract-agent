@@ -1,0 +1,279 @@
+# ============================================
+# 合同合规Agent系统 - 本地开发环境
+# 使用: docker-compose up -d
+# ============================================
+
+version: "3.9"
+
+services:
+  # -------------------- 后端服务 --------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: contract-agent-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres123@postgres:5432/contract_agent
+      - REDIS_URL=redis://redis:6379/0
+      - MILVUS_HOST=milvus
+      - MILVUS_PORT=19530
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin123
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - JAEGER_ENDPOINT=http://jaeger:4317
+      - PROMETHEUS_ENABLED=true
+      - LOG_LEVEL=DEBUG
+      - ENV=development
+    volumes:
+      - ./backend:/app  # 开发时热重载
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    networks:
+      - contract-agent-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # -------------------- 前端服务 --------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: contract-agent-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+    volumes:
+      - ./frontend/src:/app/src  # 开发时热重载
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - contract-agent-net
+    restart: unless-stopped
+
+  # -------------------- PostgreSQL 数据库 --------------------
+  postgres:
+    image: postgres:16
+    container_name: contract-agent-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: contract_agent
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
+    networks:
+      - contract-agent-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d contract_agent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # -------------------- Redis 缓存 --------------------
+  redis:
+    image: redis:7-alpine
+    container_name: contract-agent-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - contract-agent-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # -------------------- Milvus 向量数据库 --------------------
+  milvus:
+    image: milvusdb/milvus:latest
+    container_name: contract-agent-milvus
+    ports:
+      - "19530:19530"  # gRPC
+      - "9091:9091"    # 指标
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - milvus_data:/var/lib/milvus
+    depends_on:
+      - minio
+      - etcd
+    networks:
+      - contract-agent-net
+    restart: unless-stopped
+
+  # -------------------- etcd (Milvus依赖) --------------------
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.11
+    container_name: contract-agent-etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls=http://0.0.0.0:2379 --data-dir /etcd
+    volumes:
+      - etcd_data:/etcd
+    networks:
+      - contract-agent-net
+    restart: unless-stopped
+
+  # -------------------- MinIO 对象存储 --------------------
+  minio:
+    image: minio/minio:latest
+    container_name: contract-agent-minio
+    ports:
+      - "9000:9000"   # API
+      - "9001:9001"   # 控制台
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - contract-agent-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # -------------------- Zookeeper (Kafka依赖) --------------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: contract-agent-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+    networks:
+      - contract-agent-net
+    restart: unless-stopped
+
+  # -------------------- Kafka 消息队列 --------------------
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: contract-agent-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    depends_on:
+      - zookeeper
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - contract-agent-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # -------------------- Jaeger 分布式追踪 --------------------
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: contract-agent-jaeger
+    ports:
+      - "16686:16686"  # UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    networks:
+      - contract-agent-net
+    restart: unless-stopped
+
+  # -------------------- Prometheus 监控 --------------------
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: contract-agent-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    networks:
+      - contract-agent-net
+    restart: unless-stopped
+
+  # -------------------- Grafana 可视化 --------------------
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: contract-agent-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - prometheus
+    networks:
+      - contract-agent-net
+    restart: unless-stopped
+
+# -------------------- 网络配置 --------------------
+networks:
+  contract-agent-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+# -------------------- 持久化卷 --------------------
+volumes:
+  postgres_data:
+  redis_data:
+  milvus_data:
+  etcd_data:
+  minio_data:
+  zookeeper_data:
+  kafka_data:
+  prometheus_data:
+  grafana_data:

@@ -1,0 +1,10 @@
+# 合同合规Agent系统 - 命名空间
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: contract-agent
+  labels:
+    app.kubernetes.io/name: contract-agent
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    description: "合同合规Agent系统命名空间"

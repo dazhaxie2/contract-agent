@@ -1,0 +1,19 @@
+# 合同合规Agent系统 - 后端Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: contract-agent
+  labels:
+    app.kubernetes.io/name: contract-agent
+    app.kubernetes.io/component: backend
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: contract-agent
+    app.kubernetes.io/component: backend

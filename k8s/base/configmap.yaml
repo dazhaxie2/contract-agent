@@ -1,0 +1,48 @@
+# 合同合规Agent系统 - 非敏感配置
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: contract-agent-config
+  namespace: contract-agent
+  labels:
+    app.kubernetes.io/name: contract-agent
+data:
+  # 应用配置
+  ENV: "production"
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+
+  # 数据库配置
+  DATABASE_HOST: "postgres-headless"
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: "contract_agent"
+
+  # Redis配置
+  REDIS_HOST: "redis-headless"
+  REDIS_PORT: "6379"
+  REDIS_DB: "0"
+
+  # Milvus向量数据库配置
+  MILVUS_HOST: "milvus"
+  MILVUS_PORT: "19530"
+
+  # MinIO对象存储配置
+  MINIO_ENDPOINT: "minio:9000"
+  MINIO_BUCKET: "contract-agent"
+  MINIO_SECURE: "false"
+
+  # Kafka消息队列配置
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-headless:9092"
+  KAFKA_CONSUMER_GROUP: "contract-agent-group"
+
+  # 可观测性配置
+  JAEGER_ENDPOINT: "http://jaeger:4317"
+  PROMETHEUS_ENABLED: "true"
+  OTEL_SERVICE_NAME: "contract-agent-backend"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
+
+  # 服务配置
+  WORKERS_COUNT: "4"
+  MAX_REQUEST_SIZE: "104857600"
+  REQUEST_TIMEOUT: "120"
+  CORS_ORIGINS: "*"

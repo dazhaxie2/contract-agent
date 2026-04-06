@@ -1,0 +1,19 @@
+# 合同合规Agent系统 - 前端Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: contract-agent
+  labels:
+    app.kubernetes.io/name: contract-agent
+    app.kubernetes.io/component: frontend
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: contract-agent
+    app.kubernetes.io/component: frontend

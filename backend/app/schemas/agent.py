@@ -1,4 +1,6 @@
-"""Agent执行 Schema"""
+"""Agent execution schemas."""
+
+from __future__ import annotations
 
 from datetime import datetime
 from uuid import UUID
@@ -8,12 +10,13 @@ from pydantic import BaseModel, Field
 
 class AgentExecuteRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=10000)
-    task_type: str = "auto"  # auto/review/compliance/compare/search/draft
-    session_id: UUID | None = None
+    task_type: str = Field(default="auto")
+    session_id: UUID
+    tenant_id: str = Field(..., min_length=1, max_length=64)
     model_config_id: UUID | None = None
     prompt_template_id: UUID | None = None
     stream: bool = False
-    filters: dict = {}
+    filters: dict = Field(default_factory=dict)
 
 
 class AgentExecuteResponse(BaseModel):
@@ -21,9 +24,9 @@ class AgentExecuteResponse(BaseModel):
     trace_id: str
     status: str
     result: str
-    references: list[dict] = []
-    steps: list[dict] = []
-    usage: dict = {}
+    references: list[dict] = Field(default_factory=list)
+    steps: list[dict] = Field(default_factory=list)
+    usage: dict = Field(default_factory=dict)
     latency_ms: float
 
 
@@ -60,7 +63,7 @@ class AgentExecutionDetail(BaseModel):
     latency_ms: float | None
     relevance_score: float | None
     user_feedback: int | None
-    steps: list[AgentStepResponse] = []
+    steps: list[AgentStepResponse] = Field(default_factory=list)
     created_at: datetime
     completed_at: datetime | None
 

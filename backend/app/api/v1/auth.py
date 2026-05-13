@@ -39,7 +39,7 @@ async def login(req: LoginRequest):
     #     raise HTTPException(401, "用户名或密码错误")
 
     token_data = {
-        "sub": "demo-user-id",
+        "sub": "00000000-0000-0000-0000-000000000001",
         "username": req.username,
         "role": "admin",
         "tenant_id": "default",

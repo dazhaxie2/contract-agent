@@ -15,7 +15,12 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres123@postgres:5432/contract_agent
+      - DB_PROVIDER=hidb_pg
+      - DB_DSN_WRITE=postgresql+asyncpg://hidb:hidb123@hidb:5432/contract_agent?sslmode=prefer
+      - DB_DSN_READ=postgresql+asyncpg://hidb:hidb123@hidb:5432/contract_agent?sslmode=prefer
+      - DB_READ_TARGET=hidb
+      - DB_CUTOVER_PERCENT=100
+      - DB_DUAL_WRITE_ENABLED=false
       - REDIS_URL=redis://redis:6379/0
       - MILVUS_HOST=milvus
       - MILVUS_PORT=19530
@@ -23,6 +28,14 @@ services:
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin123
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - INGESTION_USE_KAFKA=true
+      - INGESTION_CONSUMER_ENABLED=true
+      - INGESTION_MAX_RETRIES=3
+      - INGESTION_STRICT_CONNECTOR=false
+      - LEGAL_SOURCE_ENABLED=true
+      - LEGAL_SOURCE_SEED_URLS=https://www.gov.cn/zhengce/zhengceku/
+      - LEGAL_SOURCE_TENANT_ALLOWLIST=default
+      - LEGAL_SOURCE_SYNC_INTERVAL_MINUTES=360
       - JAEGER_ENDPOINT=http://jaeger:4317
       - PROMETHEUS_ENABLED=true
       - LOG_LEVEL=DEBUG
@@ -30,7 +43,7 @@ services:
     volumes:
       - ./backend:/app  # 开发时热重载
     depends_on:
-      postgres:
+      hidb:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -67,25 +80,25 @@ services:
       - contract-agent-net
     restart: unless-stopped
 
-  # -------------------- PostgreSQL 数据库 --------------------
-  postgres:
-    image: postgres:16
-    container_name: contract-agent-postgres
+  # -------------------- HiDB (PostgreSQL兼容) --------------------
+  hidb:
+    image: ${HIDB_IMAGE:-postgres:16}
+    container_name: contract-agent-hidb
     ports:
       - "5432:5432"
     environment:
       POSTGRES_DB: contract_agent
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres123
+      POSTGRES_USER: hidb
+      POSTGRES_PASSWORD: hidb123
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - hidb_data:/var/lib/postgresql/data
       - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
     networks:
       - contract-agent-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d contract_agent"]
+      test: ["CMD-SHELL", "pg_isready -U hidb -d contract_agent"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -268,7 +281,7 @@ networks:
 
 # -------------------- 持久化卷 --------------------
 volumes:
-  postgres_data:
+  hidb_data:
   redis_data:
   milvus_data:
   etcd_data:

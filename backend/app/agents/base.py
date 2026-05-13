@@ -1,14 +1,12 @@
-"""
-Agent基础框架 - ReAct模式
-Thought -> Action -> Observation 循环执行
-"""
+"""Base ReAct-style agent runtime."""
 
-import asyncio
+from __future__ import annotations
+
+import json
 import time
 import uuid
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, Optional
 
 from loguru import logger
 
@@ -34,30 +32,30 @@ class AgentStep:
         self.observation: str | None = kwargs.get("observation")
         self.tool_name: str | None = kwargs.get("tool_name")
         self.tokens_used: int = kwargs.get("tokens_used", 0)
-        self.latency_ms: float = kwargs.get("latency_ms", 0)
+        self.latency_ms: float = kwargs.get("latency_ms", 0.0)
         self.timestamp: float = time.time()
 
 
 class AgentResult:
-    def __init__(self, success: bool, output: str, steps: list[AgentStep],
-                 metadata: dict | None = None):
+    def __init__(self, success: bool, output: str, steps: list[AgentStep], metadata: dict | None = None):
         self.success = success
         self.output = output
         self.steps = steps
         self.metadata = metadata or {}
-        self.total_tokens = sum(s.tokens_used for s in steps)
-        self.total_latency_ms = sum(s.latency_ms for s in steps)
+        self.total_tokens = sum(step.tokens_used for step in steps)
+        self.total_latency_ms = sum(step.latency_ms for step in steps)
 
 
 class Tool(ABC):
-    """Agent可调用的工具基类"""
-
     name: str = ""
     description: str = ""
 
     @abstractmethod
     async def execute(self, **kwargs) -> str:
-        pass
+        raise NotImplementedError
+
+    def get_parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
 
     def to_schema(self) -> dict:
         return {
@@ -69,13 +67,8 @@ class Tool(ABC):
             },
         }
 
-    def get_parameters(self) -> dict:
-        return {"type": "object", "properties": {}}
-
 
 class BaseAgent(ABC):
-    """ReAct Agent基类"""
-
     agent_type: str = "base"
     description: str = ""
 
@@ -88,135 +81,140 @@ class BaseAgent(ABC):
         self.tools[tool.name] = tool
 
     async def execute(self, query: str, context: dict | None = None) -> AgentResult:
-        """ReAct循环执行"""
-        steps = []
-        start_time = time.perf_counter()
-        iteration = 0
-
-        system_prompt = self._build_system_prompt()
-        messages = [{"role": "system", "content": system_prompt}]
+        started = time.perf_counter()
+        steps: list[AgentStep] = []
+        messages = [{"role": "system", "content": self._build_system_prompt()}]
 
         if context:
-            context_msg = self._format_context(context)
-            messages.append({"role": "user", "content": context_msg})
-
+            context_text = self._format_context(context)
+            if context_text:
+                messages.append({"role": "user", "content": context_text})
         messages.append({"role": "user", "content": query})
 
-        while iteration < self.max_iterations:
-            elapsed = (time.perf_counter() - start_time)
+        for iteration in range(1, self.max_iterations + 1):
+            elapsed = time.perf_counter() - started
             if elapsed > self.max_execution_time:
-                logger.warning(f"Agent {self.agent_type} 执行超时: {elapsed:.0f}s")
                 return AgentResult(
-                    success=False, output="执行超时，请缩小问题范围后重试",
-                    steps=steps, metadata={"timeout": True},
+                    success=False,
+                    output="Agent execution timeout",
+                    steps=steps,
+                    metadata={"timeout": True, "iterations": iteration - 1},
                 )
 
-            iteration += 1
-            step_start = time.perf_counter()
-
+            step_started = time.perf_counter()
             try:
-                # 调用大模型进行推理
-                tools_schema = [t.to_schema() for t in self.tools.values()] if self.tools else None
                 response = await llm_service.generate(
                     messages=messages,
-                    tools=tools_schema,
+                    tools=[tool.to_schema() for tool in self.tools.values()] or None,
                 )
+                step_latency = (time.perf_counter() - step_started) * 1000
+                content = str(response.get("content", ""))
+                tokens = int((response.get("usage") or {}).get("total_tokens", 0))
+                tool_calls = response.get("tool_calls") or []
 
-                step_latency = (time.perf_counter() - step_start) * 1000
-                content = response.get("content", "")
-                tokens = response.get("usage", {}).get("total_tokens", 0)
-
-                # 检查是否有工具调用
-                tool_calls = response.get("tool_calls")
-                if tool_calls:
-                    for tc in tool_calls:
-                        func_name = tc["function"]["name"]
-                        func_args = tc["function"]["arguments"]
-
-                        # 记录Action步骤
-                        steps.append(AgentStep(
-                            step_type=StepType.ACTION,
-                            content=f"调用工具: {func_name}",
-                            action=func_name,
-                            action_input=func_args if isinstance(func_args, dict) else {},
-                            tool_name=func_name,
+                if not tool_calls:
+                    steps.append(
+                        AgentStep(
+                            step_type=StepType.FINAL,
+                            content=content,
                             tokens_used=tokens,
                             latency_ms=step_latency,
-                        ))
+                        )
+                    )
+                    return AgentResult(
+                        success=True,
+                        output=content,
+                        steps=steps,
+                        metadata={"iterations": iteration, "model": response.get("model", "")},
+                    )
 
-                        # 执行工具
-                        if func_name in self.tools:
-                            tool_start = time.perf_counter()
-                            args = func_args if isinstance(func_args, dict) else {}
-                            observation = await self.tools[func_name].execute(**args)
-                            tool_latency = (time.perf_counter() - tool_start) * 1000
+                for tool_call in tool_calls:
+                    fn = (tool_call.get("function") or {}).get("name", "")
+                    raw_args = (tool_call.get("function") or {}).get("arguments", {})
+                    if isinstance(raw_args, str):
+                        try:
+                            raw_args = json.loads(raw_args) if raw_args.strip() else {}
+                        except Exception:
+                            raw_args = {}
+                    args = dict(raw_args) if isinstance(raw_args, dict) else {}
+                    if context and "tenant_id" in context and "tenant_id" not in args:
+                        args["tenant_id"] = context["tenant_id"]
 
-                            steps.append(AgentStep(
+                    steps.append(
+                        AgentStep(
+                            step_type=StepType.ACTION,
+                            content=f"Invoke tool: {fn}",
+                            action=fn,
+                            action_input=args,
+                            tool_name=fn,
+                            tokens_used=tokens,
+                            latency_ms=step_latency,
+                        )
+                    )
+
+                    if fn not in self.tools:
+                        observation = f"Unknown tool: {fn}"
+                    else:
+                        tool_started = time.perf_counter()
+                        observation = await self.tools[fn].execute(**args)
+                        tool_latency = (time.perf_counter() - tool_started) * 1000
+                        steps.append(
+                            AgentStep(
                                 step_type=StepType.OBSERVATION,
                                 content=observation,
                                 observation=observation,
-                                tool_name=func_name,
+                                tool_name=fn,
                                 latency_ms=tool_latency,
-                            ))
+                            )
+                        )
 
-                            messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
-                            messages.append({"role": "tool", "content": observation, "tool_call_id": tc.get("id", "")})
-                        else:
-                            messages.append({
-                                "role": "tool",
-                                "content": f"未知工具: {func_name}",
-                                "tool_call_id": tc.get("id", ""),
-                            })
-                else:
-                    # 无工具调用 = 最终输出
-                    steps.append(AgentStep(
-                        step_type=StepType.FINAL,
-                        content=content,
-                        tokens_used=tokens,
-                        latency_ms=step_latency,
-                    ))
-
-                    return AgentResult(
-                        success=True, output=content, steps=steps,
-                        metadata={
-                            "iterations": iteration,
-                            "model": response.get("model", ""),
-                        },
+                    messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "content": observation,
+                            "tool_call_id": tool_call.get("id", ""),
+                        }
                     )
-
             except Exception as exc:
-                logger.error(f"Agent {self.agent_type} 步骤 {iteration} 执行失败: {exc}")
-                steps.append(AgentStep(
-                    step_type=StepType.THOUGHT,
-                    content=f"执行错误: {exc}",
-                    latency_ms=(time.perf_counter() - step_start) * 1000,
-                ))
-
-                if iteration >= self.max_iterations:
-                    return AgentResult(
-                        success=False, output=f"执行失败: {exc}",
-                        steps=steps, metadata={"error": str(exc)},
+                logger.error(f"Agent {self.agent_type} iteration {iteration} failed: {exc}")
+                steps.append(
+                    AgentStep(
+                        step_type=StepType.THOUGHT,
+                        content=f"Agent error: {exc}",
+                        latency_ms=(time.perf_counter() - step_started) * 1000,
                     )
+                )
+                if iteration >= self.max_iterations:
+                    return AgentResult(success=False, output=f"Agent failed: {exc}", steps=steps, metadata={"error": str(exc)})
 
         return AgentResult(
-            success=False, output="达到最大迭代次数",
-            steps=steps, metadata={"max_iterations_reached": True},
+            success=False,
+            output="Agent stopped after reaching max iterations",
+            steps=steps,
+            metadata={"max_iterations_reached": True},
         )
 
     @abstractmethod
     def _build_system_prompt(self) -> str:
-        pass
+        raise NotImplementedError
 
     def _format_context(self, context: dict) -> str:
-        parts = []
-        if "retrieval_context" in context:
-            parts.append(f"## 检索上下文\n\n{context['retrieval_context']}")
-        if "references" in context:
-            ref_text = "\n".join(
-                f"- [参考{r['ref_id']}] {r['source']} ({r['hierarchy']})"
+        parts: list[str] = []
+        if context.get("retrieval_context"):
+            parts.append(f"## Retrieval Context\n{context['retrieval_context']}")
+        if context.get("references"):
+            refs = "\n".join(
+                f"- [REF-{r.get('ref_id')}] {r.get('source', '')} ({r.get('hierarchy', '')})"
                 for r in context["references"]
             )
-            parts.append(f"## 参考来源\n\n{ref_text}")
-        if "conversation_history" in context:
-            parts.append(f"## 对话历史\n\n{context['conversation_history']}")
+            parts.append(f"## References\n{refs}")
+        if context.get("conversation_history"):
+            parts.append(f"## Conversation\n{context['conversation_history']}")
+        if context.get("session_summary"):
+            parts.append(f"## Session Summary\n{context['session_summary']}")
+        if context.get("memory_facts"):
+            facts = "\n".join(f"- {item['key']}: {item['value']}" for item in context["memory_facts"][:10])
+            if facts:
+                parts.append(f"## Facts\n{facts}")
         return "\n\n".join(parts)

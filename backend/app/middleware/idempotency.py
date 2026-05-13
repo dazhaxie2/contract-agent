@@ -1,112 +1,172 @@
-"""
-中间件 #14: 幂等性中间件
-基于 X-Idempotency-Key 实现POST/PUT请求幂等，防重复提交
-"""
+"""Idempotency middleware with Redis-first storage."""
 
-import hashlib
+from __future__ import annotations
+
+import base64
 import json
 import time
+
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from app.core.redis_client import get_redis_client
 
-class IdempotencyStore:
-    """幂等性存储 (内存版，生产环境用Redis)"""
 
+class InMemoryIdempotencyStore:
     def __init__(self, ttl: int = 3600):
-        self._store: dict[str, dict] = {}
+        self._responses: dict[str, dict] = {}
+        self._processing: dict[str, float] = {}
         self._ttl = ttl
 
-    def get(self, key: str) -> dict | None:
-        entry = self._store.get(key)
-        if entry and time.time() - entry["timestamp"] < self._ttl:
-            return entry
-        if entry:
-            del self._store[key]
-        return None
+    def get_response(self, key: str) -> dict | None:
+        entry = self._responses.get(key)
+        if not entry:
+            return None
+        if time.time() - entry["timestamp"] > self._ttl:
+            self._responses.pop(key, None)
+            return None
+        return entry
 
-    def set(self, key: str, status_code: int, body: bytes, headers: dict):
-        self._store[key] = {
-            "status_code": status_code,
-            "body": body,
-            "headers": headers,
-            "timestamp": time.time(),
-        }
+    def set_response(self, key: str, value: dict) -> None:
+        value["timestamp"] = time.time()
+        self._responses[key] = value
 
-    def set_processing(self, key: str):
-        self._store[key] = {"processing": True, "timestamp": time.time()}
+    def try_start_processing(self, key: str) -> bool:
+        ts = self._processing.get(key)
+        if ts and time.time() - ts < self._ttl:
+            return False
+        self._processing[key] = time.time()
+        return True
+
+    def stop_processing(self, key: str) -> None:
+        self._processing.pop(key, None)
 
     def is_processing(self, key: str) -> bool:
-        entry = self._store.get(key)
-        return bool(entry and entry.get("processing"))
+        ts = self._processing.get(key)
+        if not ts:
+            return False
+        if time.time() - ts > self._ttl:
+            self._processing.pop(key, None)
+            return False
+        return True
 
 
-_idempotency_store = IdempotencyStore()
+_memory_store = InMemoryIdempotencyStore()
 
 
 class IdempotencyMiddleware(BaseHTTPMiddleware):
-    """请求幂等性保证"""
-
     IDEMPOTENT_METHODS = {"POST", "PUT", "PATCH"}
+    TTL_SECONDS = 3600
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         if request.method not in self.IDEMPOTENT_METHODS:
             return await call_next(request)
 
-        idempotency_key = request.headers.get("X-Idempotency-Key")
-        if not idempotency_key:
+        key = request.headers.get("X-Idempotency-Key")
+        if not key:
             return await call_next(request)
 
-        # 构建复合幂等键
         user_id = getattr(request.state, "user_id", "anonymous")
-        composite_key = f"{user_id}:{request.url.path}:{idempotency_key}"
+        composite_key = f"{user_id}:{request.url.path}:{key}"
+        redis = await get_redis_client()
 
-        # 检查是否正在处理
-        if _idempotency_store.is_processing(composite_key):
-            return JSONResponse(
-                status_code=409,
-                content={"code": 409, "message": "请求正在处理中，请勿重复提交", "detail": "DUPLICATE_REQUEST"},
-            )
-
-        # 检查是否有缓存结果
-        cached = _idempotency_store.get(composite_key)
-        if cached and not cached.get("processing"):
+        replay = await self._load_cached_response(redis, composite_key)
+        if replay:
             response = Response(
-                content=cached["body"],
-                status_code=cached["status_code"],
-                headers=cached["headers"],
+                content=replay["body"],
+                status_code=int(replay["status_code"]),
+                headers=replay["headers"],
             )
             response.headers["X-Idempotency-Replay"] = "true"
             return response
 
-        # 标记正在处理
-        _idempotency_store.set_processing(composite_key)
+        started = await self._try_mark_processing(redis, composite_key)
+        if not started:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "code": 409,
+                    "message": "Request is already being processed",
+                    "detail": "DUPLICATE_REQUEST",
+                },
+            )
 
         try:
             response = await call_next(request)
+            if response.media_type == "text/event-stream":
+                await self._clear_processing(redis, composite_key)
+                return response
 
-            # 缓存响应
             body = b""
             async for chunk in response.body_iterator:
                 if isinstance(chunk, str):
-                    chunk = chunk.encode()
+                    chunk = chunk.encode("utf-8")
                 body += chunk
+            headers = dict(response.headers)
 
-            _idempotency_store.set(
+            await self._store_response(
+                redis,
                 composite_key,
-                response.status_code,
-                body,
-                dict(response.headers),
+                {
+                    "status_code": response.status_code,
+                    "body": body,
+                    "headers": headers,
+                },
             )
-
+            await self._clear_processing(redis, composite_key)
             return Response(
                 content=body,
                 status_code=response.status_code,
-                headers=dict(response.headers),
+                headers=headers,
                 media_type=response.media_type,
             )
         except Exception:
-            # 失败时清除处理标记
-            _idempotency_store._store.pop(composite_key, None)
+            await self._clear_processing(redis, composite_key)
             raise
+
+    async def _load_cached_response(self, redis, key: str) -> dict | None:
+        if redis:
+            raw = await redis.get(f"idem:resp:{key}")
+            if raw:
+                parsed = json.loads(raw.decode("utf-8"))
+                return {
+                    "status_code": parsed["status_code"],
+                    "body": base64.b64decode(parsed["body"]),
+                    "headers": parsed["headers"],
+                }
+            if await redis.exists(f"idem:proc:{key}"):
+                return None
+
+        entry = _memory_store.get_response(key)
+        if entry:
+            return entry
+        if _memory_store.is_processing(key):
+            return None
+        return None
+
+    async def _try_mark_processing(self, redis, key: str) -> bool:
+        if redis:
+            return bool(await redis.set(f"idem:proc:{key}", b"1", nx=True, ex=self.TTL_SECONDS))
+        return _memory_store.try_start_processing(key)
+
+    async def _store_response(self, redis, key: str, payload: dict) -> None:
+        if redis:
+            serialized = json.dumps(
+                {
+                    "status_code": payload["status_code"],
+                    "body": base64.b64encode(payload["body"]).decode("utf-8"),
+                    "headers": payload["headers"],
+                }
+            ).encode("utf-8")
+            await redis.set(f"idem:resp:{key}", serialized, ex=self.TTL_SECONDS)
+            await redis.delete(f"idem:proc:{key}")
+            return
+        _memory_store.set_response(key, payload)
+        _memory_store.stop_processing(key)
+
+    async def _clear_processing(self, redis, key: str) -> None:
+        if redis:
+            await redis.delete(f"idem:proc:{key}")
+            return
+        _memory_store.stop_processing(key)

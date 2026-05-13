@@ -134,8 +134,10 @@ spec:
                 secretKeyRef:
                   name: contract-agent-secret
                   key: DASHSCOPE_API_KEY
-            - name: DATABASE_URL
-              value: "postgresql+asyncpg://$(DATABASE_USER):$(DATABASE_PASSWORD)@$(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)"
+            - name: DB_DSN_WRITE
+              value: "postgresql+asyncpg://$(DATABASE_USER):$(DATABASE_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)?sslmode=$(DB_SSL_MODE)"
+            - name: DB_DSN_READ
+              value: "postgresql+asyncpg://$(DATABASE_USER):$(DATABASE_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)?sslmode=$(DB_SSL_MODE)"
           # 容器安全上下文
           securityContext:
             allowPrivilegeEscalation: false

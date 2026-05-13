@@ -1,8 +1,3 @@
-# ============================================
-# 合同合规Agent系统 - CI流水线
-# 触发: push/PR到main/develop
-# ============================================
-
 name: CI Pipeline
 
 on:
@@ -15,11 +10,11 @@ env:
   REGISTRY: ghcr.io
   BACKEND_IMAGE: ghcr.io/${{ github.repository }}/backend
   FRONTEND_IMAGE: ghcr.io/${{ github.repository }}/frontend
+  HIDB_TEST_IMAGE: postgres:16
 
 jobs:
-  # ========== 代码检查 ==========
   lint:
-    name: 代码检查
+    name: Lint
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -31,39 +26,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Python Lint (后端)
+      - name: Setup Python
         if: matrix.name == 'backend'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ruff && ruff check .
+      - name: Run Ruff
         if: matrix.name == 'backend'
         working-directory: ${{ matrix.working-directory }}
+        run: pip install ruff && ruff check .
 
-      - name: Node Lint (前端)
+      - name: Setup Node
         if: matrix.name == 'frontend'
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - run: npm ci && npm run lint
+      - name: Run Frontend Lint
         if: matrix.name == 'frontend'
         working-directory: ${{ matrix.working-directory }}
+        run: npm ci && npm run lint
         continue-on-error: true
 
-  # ========== 后端测试 ==========
   test-backend:
-    name: 后端测试
+    name: Backend Tests (HiDB + Alembic)
     runs-on: ubuntu-latest
     services:
-      postgres:
-        image: postgres:16
+      hidb:
+        image: ${{ env.HIDB_TEST_IMAGE }}
         env:
           POSTGRES_DB: test_db
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
+          POSTGRES_USER: hidb
+          POSTGRES_PASSWORD: hidb123
         ports: ["5432:5432"]
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U hidb -d test_db"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -75,51 +71,64 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+    env:
+      DB_PROVIDER: hidb_pg
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USER: hidb
+      DB_PASSWORD: hidb123
+      DB_NAME: test_db
+      DB_READ_TARGET: hidb
+      DB_DUAL_WRITE_ENABLED: "false"
+      DB_AUTO_CREATE_SCHEMA: "false"
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      ENVIRONMENT: test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
-      - name: 安装依赖
+
+      - name: Install Dependencies
         working-directory: backend
         run: pip install -r requirements.txt
-      - name: 运行测试
+
+      - name: Alembic Upgrade Head
         working-directory: backend
-        env:
-          DB_HOST: localhost
-          DB_PORT: 5432
-          DB_USER: test
-          DB_PASSWORD: test
-          DB_NAME: test_db
-          REDIS_HOST: localhost
-          REDIS_PORT: 6379
-        run: |
-          python -m pytest tests/ -v --cov=app --cov-report=xml --cov-report=term-missing
-      - name: 上传覆盖率
+        run: alembic upgrade head
+
+      - name: Alembic Current Revision Check
+        working-directory: backend
+        run: alembic current
+
+      - name: API Regression Tests
+        working-directory: backend
+        run: python -m pytest tests/ -v --cov=app --cov-report=xml --cov-report=term-missing
+
+      - name: Upload Coverage
         uses: codecov/codecov-action@v4
         with:
           file: backend/coverage.xml
         continue-on-error: true
 
-  # ========== 安全扫描 ==========
   security-scan:
-    name: 安全扫描
+    name: Security Scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Trivy漏洞扫描
+      - name: Trivy File System Scan
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: "fs"
           scan-ref: "."
           severity: "CRITICAL,HIGH"
           format: "table"
-          exit-code: "0"  # 不阻断，仅报告
+          exit-code: "0"
 
-  # ========== 构建镜像 ==========
   build-images:
-    name: 构建Docker镜像
+    name: Build Docker Images
     runs-on: ubuntu-latest
     needs: [lint, test-backend]
     if: github.event_name == 'push'
@@ -129,17 +138,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 登录容器注册表
+      - name: Login to Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 设置Docker Buildx
+      - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: 构建后端镜像
+      - name: Build Backend Image
         uses: docker/build-push-action@v5
         with:
           context: ./backend
@@ -151,7 +160,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: 构建前端镜像
+      - name: Build Frontend Image
         uses: docker/build-push-action@v5
         with:
           context: ./frontend
@@ -163,9 +172,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ========== 部署Staging ==========
   deploy-staging:
-    name: 部署到Staging
+    name: Deploy Staging
     runs-on: ubuntu-latest
     needs: [build-images]
     if: github.ref == 'refs/heads/develop'
@@ -173,25 +181,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 配置Kubectl
+      - name: Setup Kubectl
         uses: azure/setup-kubectl@v3
 
-      - name: 设置Kubeconfig
+      - name: Setup Kubeconfig
         run: echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > $HOME/.kube/config
 
-      - name: 部署到Staging
+      - name: Deploy to Staging
         run: |
           cd k8s/overlays/staging
           kustomize edit set image backend=${{ env.BACKEND_IMAGE }}:${{ github.sha }}
           kustomize edit set image frontend=${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
           kubectl apply -k .
 
-      - name: 等待部署完成
+      - name: Wait for Rollout
         run: |
           kubectl -n contract-agent-staging rollout status deployment/backend --timeout=300s
           kubectl -n contract-agent-staging rollout status deployment/frontend --timeout=120s
 
-      - name: 健康检查
+      - name: Health Check
         run: |
           sleep 10
           kubectl -n contract-agent-staging exec deploy/backend -- curl -sf http://localhost:8000/health

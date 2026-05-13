@@ -3,8 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Integer, Float, DateTime, Text, Index
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy import String, Integer, Float, DateTime, Text, Index, JSON, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -14,27 +13,27 @@ class AgentExecution(Base):
     """Agent执行记录表"""
     __tablename__ = "agent_executions"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     trace_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
-    session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    session_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     # 任务信息
     task_type: Mapped[str] = mapped_column(String(64), nullable=False)
     user_query: Mapped[str] = mapped_column(Text, nullable=False)
     parsed_intent: Mapped[str] = mapped_column(String(128), nullable=True)
-    parsed_entities: Mapped[list] = mapped_column(JSONB, default=list)
+    parsed_entities: Mapped[list] = mapped_column(JSON, default=list)
     # 执行信息
     agent_type: Mapped[str] = mapped_column(String(64), nullable=False)  # master/document/retrieval/compliance/...
-    model_config_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=True)
-    prompt_template_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=True)
+    model_config_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    prompt_template_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=True)
     total_steps: Mapped[int] = mapped_column(Integer, default=0)
     total_tokens_used: Mapped[int] = mapped_column(Integer, default=0)
     total_cost: Mapped[float] = mapped_column(Float, default=0.0)
     # 结果
     status: Mapped[str] = mapped_column(String(32), default="running")
     result: Mapped[str] = mapped_column(Text, nullable=True)
-    result_metadata: Mapped[dict] = mapped_column(JSONB, default=dict)
+    result_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
     error_message: Mapped[str] = mapped_column(Text, nullable=True)
     # 质量指标
     relevance_score: Mapped[float] = mapped_column(Float, nullable=True)
@@ -59,8 +58,8 @@ class AgentStep(Base):
     """Agent执行步骤表 - ReAct Thought/Action/Observation"""
     __tablename__ = "agent_steps"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    execution_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    execution_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
     trace_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     span_id: Mapped[str] = mapped_column(String(64), nullable=False)
     parent_span_id: Mapped[str] = mapped_column(String(64), nullable=True)
@@ -71,15 +70,15 @@ class AgentStep(Base):
     # 内容
     thought: Mapped[str] = mapped_column(Text, nullable=True)
     action: Mapped[str] = mapped_column(String(128), nullable=True)
-    action_input: Mapped[dict] = mapped_column(JSONB, default=dict)
+    action_input: Mapped[dict] = mapped_column(JSON, default=dict)
     observation: Mapped[str] = mapped_column(Text, nullable=True)
     # 工具调用
     tool_name: Mapped[str] = mapped_column(String(64), nullable=True)
-    tool_input: Mapped[dict] = mapped_column(JSONB, default=dict)
+    tool_input: Mapped[dict] = mapped_column(JSON, default=dict)
     tool_output: Mapped[str] = mapped_column(Text, nullable=True)
     # 检索信息
-    retrieved_chunks: Mapped[list] = mapped_column(JSONB, default=list)
-    retrieval_scores: Mapped[list] = mapped_column(JSONB, default=list)
+    retrieved_chunks: Mapped[list] = mapped_column(JSON, default=list)
+    retrieval_scores: Mapped[list] = mapped_column(JSON, default=list)
     # 性能
     tokens_used: Mapped[int] = mapped_column(Integer, default=0)
     latency_ms: Mapped[float] = mapped_column(Float, nullable=True)

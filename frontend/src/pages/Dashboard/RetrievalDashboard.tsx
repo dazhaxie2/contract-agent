@@ -1,112 +1,119 @@
-import React from 'react';
-import { Card, Row, Col, Statistic, Typography, Table, Tag } from 'antd';
-import { Line, Column, Pie } from '@ant-design/charts';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Alert, Card, Col, Row, Space, Statistic, Table, Typography } from 'antd';
+import { Column } from '@ant-design/charts';
 
-const { Title } = Typography;
+import { dashboardApi, RetrievalMetrics } from '../../services/api';
+
+const { Title, Text } = Typography;
 
 const RetrievalDashboard: React.FC = () => {
-  const recallData = [
-    { k: 'Top-1', rate: 72 }, { k: 'Top-5', rate: 89 },
-    { k: 'Top-10', rate: 95 }, { k: 'Top-20', rate: 98 },
-  ];
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [metrics, setMetrics] = useState<RetrievalMetrics | null>(null);
 
-  const channelData = [
-    { channel: '向量检索', contribution: 55 },
-    { channel: '关键词检索', contribution: 25 },
-    { channel: '图谱检索', contribution: 20 },
-  ];
+  const refresh = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await dashboardApi.getRetrievalMetrics();
+      setMetrics(data);
+    } catch {
+      setError('Failed to load retrieval metrics');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const rerankData = [
-    { stage: '重排前', metric: 'MRR', value: 0.78 },
-    { stage: '重排后', metric: 'MRR', value: 0.91 },
-    { stage: '重排前', metric: 'NDCG@10', value: 0.75 },
-    { stage: '重排后', metric: 'NDCG@10', value: 0.92 },
-  ];
+  useEffect(() => {
+    refresh();
+    const timer = window.setInterval(refresh, 20000);
+    return () => window.clearInterval(timer);
+  }, []);
 
-  const latencyData = [
-    { stage: 'Query预处理', time: 50 },
-    { stage: '向量检索', time: 80 },
-    { stage: '关键词检索', time: 45 },
-    { stage: '图谱检索', time: 120 },
-    { stage: '融合去重', time: 10 },
-    { stage: '粗排', time: 150 },
-    { stage: '精排', time: 200 },
-    { stage: '校验', time: 100 },
+  const channels = metrics?.channels ?? [];
+  const channelRows = useMemo(
+    () =>
+      channels.map((item) => ({
+        channel: item.name,
+        top_k_hit_rate: item.top_k_hit_rate.join(', '),
+        k_values: item.k_values.join(', '),
+      })),
+    [channels],
+  );
+
+  const recall = metrics?.recall_rate ?? 0;
+  const precision = metrics?.precision_rate ?? 0;
+  const before = metrics?.rerank_comparison?.before ?? 0;
+  const after = metrics?.rerank_comparison?.after ?? 0;
+
+  const chartData = [
+    { metric: 'Recall@10', value: recall * 100 },
+    { metric: 'Precision@10', value: precision * 100 },
+    { metric: 'MRR Before', value: before * 100 },
+    { metric: 'MRR After', value: after * 100 },
   ];
 
   return (
     <div>
-      <Title level={4}>检索质量大盘</Title>
+      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+          <Title level={4} style={{ margin: 0 }}>
+            Retrieval Dashboard
+          </Title>
+          <Text type="secondary">{loading ? 'Refreshing...' : 'Auto refresh: 20s'}</Text>
+        </Space>
 
-      <Row gutter={[16, 16]} className="mb-4">
-        <Col span={6}><Card><Statistic title="Top-10 召回率" value={95} suffix="%" valueStyle={{ color: '#52c41a' }} /></Card></Col>
-        <Col span={6}><Card><Statistic title="Top-10 精确率" value={87} suffix="%" valueStyle={{ color: '#1677ff' }} /></Card></Col>
-        <Col span={6}><Card><Statistic title="MRR" value={0.91} precision={2} valueStyle={{ color: '#722ed1' }} /></Card></Col>
-        <Col span={6}><Card><Statistic title="NDCG@10" value={0.92} precision={2} valueStyle={{ color: '#faad14' }} /></Card></Col>
-      </Row>
+        {error ? <Alert type="error" message={error} showIcon /> : null}
 
-      <Row gutter={[16, 16]} className="mb-4">
-        <Col span={12}>
-          <Card title="Top-K 召回率" size="small">
-            <Column
-              data={recallData}
-              xField="k"
-              yField="rate"
-              height={250}
-              color="#1677ff"
-              label={{ position: 'middle', style: { fill: '#fff' } }}
-              yAxis={{ max: 100, label: { formatter: (v: string) => `${v}%` } }}
-            />
-          </Card>
-        </Col>
-        <Col span={12}>
-          <Card title="检索通道贡献占比" size="small">
-            <Pie
-              data={channelData}
-              angleField="contribution"
-              colorField="channel"
-              radius={0.8}
-              height={250}
-              label={{ type: 'outer', content: '{name}: {percentage}' }}
-              legend={{ position: 'bottom' }}
-              color={['#1677ff', '#52c41a', '#722ed1']}
-            />
-          </Card>
-        </Col>
-      </Row>
+        <Row gutter={[16, 16]}>
+          <Col xs={24} md={6}>
+            <Card>
+              <Statistic title="Recall@10" value={recall * 100} precision={2} suffix="%" />
+            </Card>
+          </Col>
+          <Col xs={24} md={6}>
+            <Card>
+              <Statistic title="Precision@10" value={precision * 100} precision={2} suffix="%" />
+            </Card>
+          </Col>
+          <Col xs={24} md={6}>
+            <Card>
+              <Statistic title="MRR Before" value={before} precision={4} />
+            </Card>
+          </Col>
+          <Col xs={24} md={6}>
+            <Card>
+              <Statistic title="MRR After" value={after} precision={4} />
+            </Card>
+          </Col>
+        </Row>
 
-      <Row gutter={[16, 16]}>
-        <Col span={12}>
-          <Card title="重排效果对比" size="small">
-            <Column
-              data={rerankData}
-              xField="metric"
-              yField="value"
-              seriesField="stage"
-              isGroup
-              height={250}
-              color={['#d9d9d9', '#1677ff']}
-              yAxis={{ max: 1.0 }}
-              label={{ position: 'middle', style: { fill: '#fff' } }}
-            />
-          </Card>
-        </Col>
-        <Col span={12}>
-          <Card title="检索管线各阶段延迟(ms)" size="small">
-            <Column
-              data={latencyData}
-              xField="stage"
-              yField="time"
-              height={250}
-              color="#faad14"
-              label={{ position: 'middle', style: { fill: '#fff' } }}
-              yAxis={{ label: { formatter: (v: string) => `${v}ms` } }}
-            />
-          </Card>
-        </Col>
-      </Row>
+        <Row gutter={[16, 16]}>
+          <Col xs={24} lg={12}>
+            <Card title="Quality Metrics Comparison" loading={loading && !metrics}>
+              <Column data={chartData} xField="metric" yField="value" height={260} />
+            </Card>
+          </Col>
+          <Col xs={24} lg={12}>
+            <Card title="Channel Contribution" loading={loading && !metrics}>
+              <Table
+                rowKey="channel"
+                size="small"
+                pagination={false}
+                dataSource={channelRows}
+                columns={[
+                  { title: 'Channel', dataIndex: 'channel' },
+                  { title: 'K', dataIndex: 'k_values' },
+                  { title: 'Hit Rate', dataIndex: 'top_k_hit_rate' },
+                ]}
+              />
+            </Card>
+          </Col>
+        </Row>
+      </Space>
     </div>
   );
 };
 
 export default RetrievalDashboard;
+

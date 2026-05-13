@@ -35,43 +35,86 @@ api.interceptors.response.use(
           window.location.href = '/login';
           break;
         case 403:
-          message.error('权限不足');
+          message.error('Permission denied');
           break;
         case 404:
-          message.error('请求的资源不存在');
+          message.error('Resource not found');
           break;
         case 422:
-          message.error('请求参数错误');
+          message.error('Invalid request parameters');
           break;
         case 500:
-          message.error('服务器内部错误');
+          message.error('Internal server error');
           break;
         default:
-          message.error(data?.detail || '请求失败');
+          message.error(data?.detail || 'Request failed');
       }
     } else if (error.request) {
-      message.error('网络连接失败，请检查网络');
+      message.error('Network request failed');
     }
     return Promise.reject(error);
   },
 );
 
-// ===================== 模型配置 API =====================
+export interface PageResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+function normalizePageResult<T>(
+  payload: unknown,
+  fallbackPage = 1,
+  fallbackPageSize = 20,
+): PageResult<T> {
+  if (Array.isArray(payload)) {
+    const items = payload as T[];
+    return {
+      items,
+      total: items.length,
+      page: fallbackPage,
+      page_size: fallbackPageSize,
+      total_pages: 1,
+    };
+  }
+
+  const maybePage = payload as Partial<PageResult<T>> | undefined;
+  const items = Array.isArray(maybePage?.items) ? maybePage.items : [];
+  const total = typeof maybePage?.total === 'number' ? maybePage.total : items.length;
+  const page = typeof maybePage?.page === 'number' ? maybePage.page : fallbackPage;
+  const pageSize = typeof maybePage?.page_size === 'number' ? maybePage.page_size : fallbackPageSize;
+  const totalPages =
+    typeof maybePage?.total_pages === 'number'
+      ? maybePage.total_pages
+      : Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
+
+  return {
+    items,
+    total,
+    page,
+    page_size: pageSize,
+    total_pages: totalPages,
+  };
+}
+
+// ===================== Model APIs =====================
 
 export interface ModelConfig {
   id: string;
   name: string;
+  display_name: string;
   provider: 'aliyun' | 'openai' | 'local' | 'vllm';
   model_id: string;
   temperature: number;
   top_p: number;
   max_tokens: number;
   context_window: number;
-  timeout: number;
-  max_concurrency: number;
+  timeout_seconds: number;
+  max_concurrent_requests: number;
   api_endpoint: string;
-  api_key_ref?: string;
-  status: 'active' | 'inactive' | 'error';
+  status?: 'active' | 'inactive' | 'error';
   created_at: string;
   updated_at: string;
 }
@@ -116,24 +159,69 @@ export interface ABTest {
   created_at: string;
 }
 
+function mapDeployment(item: Record<string, unknown>): DeploymentInfo {
+  return {
+    id: String(item.id || ''),
+    model_id: String(item.model_config_id || item.model_id || ''),
+    model_name: String(item.deployment_name || item.model_name || ''),
+    status: (item.status as DeploymentInfo['status']) || 'running',
+    gpu_type: String(item.gpu_type || ''),
+    gpu_count: Number(item.gpu_count || 0),
+    replicas: Number(item.replicas || 1),
+    ready_replicas: Number(item.ready_replicas || item.replicas || 1),
+    cpu_usage: Number(item.cpu_usage || 0),
+    memory_usage: Number(item.memory_usage || 0),
+    created_at: String(item.created_at || ''),
+  };
+}
+
 export const modelApi = {
-  list: (params?: Record<string, unknown>) => api.get<ModelConfig[]>('/models', { params }),
-  get: (id: string) => api.get<ModelConfig>(`/models/${id}`),
-  create: (data: Partial<ModelConfig>) => api.post<ModelConfig>('/models', data),
-  update: (id: string, data: Partial<ModelConfig>) => api.put<ModelConfig>(`/models/${id}`, data),
-  delete: (id: string) => api.delete(`/models/${id}`),
-  getMetrics: (id: string, period?: string) =>
-    api.get<ModelMetrics>(`/models/${id}/metrics`, { params: { period } }),
-  getDeployments: () => api.get<DeploymentInfo[]>('/models/deployments'),
-  deploy: (id: string, config: Record<string, unknown>) =>
-    api.post(`/models/${id}/deploy`, config),
-  undeploy: (id: string) => api.post(`/models/${id}/undeploy`),
-  listABTests: () => api.get<ABTest[]>('/models/ab-tests'),
-  createABTest: (data: Partial<ABTest>) => api.post<ABTest>('/models/ab-tests', data),
-  stopABTest: (id: string) => api.post(`/models/ab-tests/${id}/stop`),
+  list: async (params?: Record<string, unknown>) => {
+    const response = await api.get<PageResult<ModelConfig>>('/models', { params });
+    const page = Number(params?.page || 1);
+    const pageSize = Number(params?.page_size || 20);
+    return normalizePageResult<ModelConfig>(response.data, page, pageSize);
+  },
+  get: async (id: string) => (await api.get<ModelConfig>(`/models/${id}`)).data,
+  create: async (data: Partial<ModelConfig>) => (await api.post<ModelConfig>('/models', data)).data,
+  update: async (id: string, data: Partial<ModelConfig>) =>
+    (await api.put<ModelConfig>(`/models/${id}`, data)).data,
+  delete: async (id: string) => (await api.delete(`/models/${id}`)).data,
+  getMetrics: async (id: string, period?: string) =>
+    (await api.get<ModelMetrics>(`/models/${id}/metrics`, { params: { period } })).data,
+  getDeployments: async () => {
+    const response = await api.get<unknown[]>('/models/deployments');
+    return Array.isArray(response.data)
+      ? response.data.map((item) => mapDeployment(item as Record<string, unknown>))
+      : [];
+  },
+  deploy: async (id: string, config: Record<string, unknown>) => {
+    try {
+      const response = await api.post('/models/deployments', {
+        model_config_id: id,
+        deployment_name: String(config.deployment_name || `${id}-deployment`),
+        deployment_type: String(config.deployment_type || 'cloud_api'),
+        endpoint_url: String(config.endpoint_url || ''),
+        replicas: Number(config.replicas || 1),
+        gpu_type: String(config.gpu_type || ''),
+        gpu_count: Number(config.gpu_count || 0),
+        cpu_limit: String(config.cpu_limit || ''),
+        memory_limit: String(config.memory_limit || ''),
+        deploy_config: config,
+      });
+      return mapDeployment(response.data as Record<string, unknown>);
+    } catch {
+      const fallback = await api.post(`/models/${id}/deploy`, config);
+      return mapDeployment(fallback.data as Record<string, unknown>);
+    }
+  },
+  undeploy: async (id: string) => (await api.post(`/models/${id}/undeploy`)).data,
+  listABTests: async () => (await api.get<ABTest[]>('/models/ab-tests')).data,
+  createABTest: async (data: Partial<ABTest>) => (await api.post<ABTest>('/models/ab-tests', data)).data,
+  stopABTest: async (id: string) => (await api.post(`/models/ab-tests/${id}/stop`)).data,
 };
 
-// ===================== 提示词 API =====================
+// ===================== Prompt APIs =====================
 
 export interface PromptVariable {
   name: string;
@@ -179,18 +267,37 @@ export interface PromptTestResult {
 }
 
 export const promptApi = {
-  list: (params?: Record<string, unknown>) => api.get<PromptTemplate[]>('/prompts', { params }),
-  get: (id: string) => api.get<PromptTemplate>(`/prompts/${id}`),
-  create: (data: Partial<PromptTemplate>) => api.post<PromptTemplate>('/prompts', data),
-  update: (id: string, data: Partial<PromptTemplate>) =>
-    api.put<PromptTemplate>(`/prompts/${id}`, data),
-  delete: (id: string) => api.delete(`/prompts/${id}`),
-  getVersions: (id: string) => api.get<PromptVersion[]>(`/prompts/${id}/versions`),
-  test: (id: string, variables: Record<string, unknown>) =>
-    api.post<PromptTestResult>(`/prompts/${id}/test`, { variables }),
+  list: async (params?: Record<string, unknown>) => {
+    const response = await api.get<PageResult<PromptTemplate>>('/prompts', { params });
+    const page = Number(params?.page || 1);
+    const pageSize = Number(params?.page_size || 20);
+    return normalizePageResult<PromptTemplate>(response.data, page, pageSize);
+  },
+  get: async (id: string) => (await api.get<PromptTemplate>(`/prompts/${id}`)).data,
+  create: async (data: Partial<PromptTemplate>) => (await api.post<PromptTemplate>('/prompts', data)).data,
+  update: async (id: string, data: Partial<PromptTemplate>) =>
+    (await api.put<PromptTemplate>(`/prompts/${id}`, data)).data,
+  delete: async (id: string) => (await api.delete(`/prompts/${id}`)).data,
+  getVersions: async (id: string) => (await api.get<PromptVersion[]>(`/prompts/${id}/versions`)).data,
+  test: async (id: string, variables: Record<string, unknown>) => {
+    try {
+      const res = await api.post('/prompts/test', { template_id: id, variables });
+      const payload = res.data as Record<string, unknown>;
+      const usage = (payload.usage as Record<string, unknown>) || {};
+      return {
+        output: String(payload.output || ''),
+        tokens_used: Number(usage.total_tokens || 0),
+        latency_ms: Number(payload.latency_ms || 0),
+        score: Number(payload.quality_score || 0),
+        model_used: String(payload.model || ''),
+      } satisfies PromptTestResult;
+    } catch {
+      return (await api.post<PromptTestResult>(`/prompts/${id}/test`, { variables })).data;
+    }
+  },
 };
 
-// ===================== 监控 API =====================
+// ===================== Dashboard APIs =====================
 
 export interface SystemMetrics {
   qps: { timestamp: string; value: number }[];
@@ -240,11 +347,115 @@ export interface RetrievalMetrics {
   };
 }
 
+function mapSystemOverview(payload: Record<string, unknown>): SystemMetrics {
+  const timestamp = new Date().toISOString();
+  const latency = (payload.latency as Record<string, unknown>) || {};
+  const errorRate = (payload.error_rate as Record<string, unknown>) || {};
+  const servicesMap = (payload.services as Record<string, Record<string, unknown>>) || {};
+  return {
+    qps: [{ timestamp, value: Number((payload.qps as Record<string, unknown>)?.current || 0) }],
+    latency_p50: [{ timestamp, value: Number(latency.p50_ms || 0) }],
+    latency_p99: [{ timestamp, value: Number(latency.p99_ms || 0) }],
+    error_rate: [{ timestamp, value: Number(errorRate.rate_5xx || 0) }],
+    active_connections: Number(payload.active_connections || 0),
+    services: Object.entries(servicesMap).map(([name, svc]) => ({
+      name,
+      status: (svc.status as ServiceHealth['status']) || 'healthy',
+      uptime: Number(svc.uptime || 1),
+      last_check: timestamp,
+    })),
+  };
+}
+
+function mapAgentTrace(payload: Record<string, unknown>): AgentTrace {
+  const steps = Array.isArray(payload.steps) ? payload.steps : [];
+  return {
+    trace_id: String(payload.trace_id || ''),
+    status: (payload.status as AgentTrace['status']) || 'success',
+    total_duration_ms: Number(payload.total_duration_ms || payload.latency_ms || 0),
+    total_tokens: Number(payload.total_tokens || (payload.usage as Record<string, unknown>)?.total_tokens || 0),
+    steps: steps.map((step) => {
+      const data = step as Record<string, unknown>;
+      return {
+        step_id: String(data.step_id || data.id || data.step_number || ''),
+        type: (data.type as TraceStep['type']) || (data.step_type as TraceStep['type']) || 'observation',
+        content: String(data.content || ''),
+        duration_ms: Number(data.duration_ms || data.latency_ms || 0),
+        tokens: Number(data.tokens || data.tokens_used || 0),
+        metadata: (data.metadata as Record<string, unknown>) || undefined,
+      };
+    }),
+    created_at: String(payload.created_at || ''),
+  };
+}
+
+function mapRetrievalMetrics(payload: Record<string, unknown>): RetrievalMetrics {
+  if (typeof payload.recall_rate === 'number') {
+    return payload as unknown as RetrievalMetrics;
+  }
+  const recall = (payload.recall as Record<string, unknown>) || {};
+  const precision = (payload.precision as Record<string, unknown>) || {};
+  const rerank = (payload.rerank_improvement as Record<string, unknown>) || {};
+  const contribution = (payload.channel_contribution as Record<string, unknown>) || {};
+  return {
+    recall_rate: Number(recall.top_10 || 0),
+    precision_rate: Number(precision.top_10 || 0),
+    channels: [
+      {
+        name: 'vector',
+        k_values: [1, 5, 10],
+        top_k_hit_rate: [
+          Number(recall.top_1 || 0),
+          Number(recall.top_5 || 0),
+          Number(contribution.vector || recall.top_10 || 0),
+        ],
+      },
+      {
+        name: 'keyword',
+        k_values: [10],
+        top_k_hit_rate: [Number(contribution.keyword || precision.top_10 || 0)],
+      },
+      {
+        name: 'graph',
+        k_values: [10],
+        top_k_hit_rate: [Number(contribution.graph || 0)],
+      },
+    ],
+    rerank_comparison: {
+      before: Number(rerank.before_mrr || 0),
+      after: Number(rerank.after_mrr || 0),
+    },
+  };
+}
+
 export const dashboardApi = {
-  getSystemMetrics: (period?: string) =>
-    api.get<SystemMetrics>('/dashboard/system', { params: { period } }),
-  getTrace: (traceId: string) => api.get<AgentTrace>(`/dashboard/traces/${traceId}`),
-  getRetrievalMetrics: () => api.get<RetrievalMetrics>('/dashboard/retrieval'),
+  getSystemMetrics: async () => {
+    try {
+      const response = await api.get('/system/metrics/overview');
+      return mapSystemOverview(response.data as Record<string, unknown>);
+    } catch {
+      const fallback = await api.get<SystemMetrics>('/dashboard/system');
+      return fallback.data;
+    }
+  },
+  getTrace: async (traceId: string) => {
+    try {
+      const response = await api.get(`/agents/trace/${traceId}`);
+      return mapAgentTrace(response.data as Record<string, unknown>);
+    } catch {
+      const fallback = await api.get<AgentTrace>(`/dashboard/traces/${traceId}`);
+      return fallback.data;
+    }
+  },
+  getRetrievalMetrics: async () => {
+    try {
+      const response = await api.get('/system/metrics/retrieval');
+      return mapRetrievalMetrics(response.data as Record<string, unknown>);
+    } catch {
+      const fallback = await api.get<RetrievalMetrics>('/dashboard/retrieval');
+      return fallback.data;
+    }
+  },
 };
 
 export default api;

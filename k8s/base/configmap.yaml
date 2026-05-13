@@ -12,10 +12,15 @@ data:
   LOG_LEVEL: "INFO"
   LOG_FORMAT: "json"
 
-  # 数据库配置
-  DATABASE_HOST: "postgres-headless"
-  DATABASE_PORT: "5432"
-  DATABASE_NAME: "contract_agent"
+  # 数据库配置（HiDB PostgreSQL兼容）
+  DB_PROVIDER: "hidb_pg"
+  DB_HOST: "hidb-headless"
+  DB_PORT: "5432"
+  DB_NAME: "contract_agent"
+  DB_SSL_MODE: "prefer"
+  DB_DUAL_WRITE_ENABLED: "false"
+  DB_READ_TARGET: "hidb"
+  DB_CUTOVER_PERCENT: "100"
 
   # Redis配置
   REDIS_HOST: "redis-headless"
@@ -34,6 +39,14 @@ data:
   # Kafka消息队列配置
   KAFKA_BOOTSTRAP_SERVERS: "kafka-headless:9092"
   KAFKA_CONSUMER_GROUP: "contract-agent-group"
+  INGESTION_USE_KAFKA: "true"
+  INGESTION_CONSUMER_ENABLED: "true"
+  INGESTION_MAX_RETRIES: "3"
+  INGESTION_STRICT_CONNECTOR: "false"
+  LEGAL_SOURCE_ENABLED: "true"
+  LEGAL_SOURCE_SEED_URLS: "https://www.gov.cn/zhengce/zhengceku/"
+  LEGAL_SOURCE_TENANT_ALLOWLIST: "default"
+  LEGAL_SOURCE_SYNC_INTERVAL_MINUTES: "360"
 
   # 可观测性配置
   JAEGER_ENDPOINT: "http://jaeger:4317"

@@ -3,8 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Boolean, DateTime, Text, Index
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy import String, Boolean, DateTime, Text, Index, JSON, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -13,7 +12,7 @@ from app.core.database import Base
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     email: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
     hashed_password: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -25,7 +24,7 @@ class User(Base):
     # 用户画像
     industry: Mapped[str] = mapped_column(String(64), nullable=True)
     company_type: Mapped[str] = mapped_column(String(64), nullable=True)
-    preferences: Mapped[dict] = mapped_column(JSONB, default=dict)
+    preferences: Mapped[dict] = mapped_column(JSON, default=dict)
     # 时间戳
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
@@ -41,12 +40,12 @@ class User(Base):
 class UserSession(Base):
     __tablename__ = "user_sessions"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     # 短期记忆
-    conversation_history: Mapped[list] = mapped_column(JSONB, default=list)
-    entity_memory: Mapped[dict] = mapped_column(JSONB, default=dict)
+    conversation_history: Mapped[list] = mapped_column(JSON, default=list)
+    entity_memory: Mapped[dict] = mapped_column(JSON, default=dict)
     summary: Mapped[str] = mapped_column(Text, nullable=True)
     # 元数据
     ip_address: Mapped[str] = mapped_column(String(45), nullable=True)

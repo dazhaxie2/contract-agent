@@ -33,6 +33,18 @@ backend:
     ENVIRONMENT: production
     LOG_LEVEL: INFO
     WORKERS: "4"
+    DB_PROVIDER: hidb_pg
+    DB_READ_TARGET: hidb
+    DB_CUTOVER_PERCENT: "100"
+    DB_DUAL_WRITE_ENABLED: "false"
+    INGESTION_USE_KAFKA: "true"
+    INGESTION_CONSUMER_ENABLED: "true"
+    INGESTION_MAX_RETRIES: "3"
+    INGESTION_STRICT_CONNECTOR: "false"
+    LEGAL_SOURCE_ENABLED: "true"
+    LEGAL_SOURCE_SEED_URLS: "https://www.gov.cn/zhengce/zhengceku/"
+    LEGAL_SOURCE_TENANT_ALLOWLIST: "default"
+    LEGAL_SOURCE_SYNC_INTERVAL_MINUTES: "360"
     LLM_GENERATION_MODEL: qwen-max
     LLM_LIGHT_MODEL: qwen-plus
     LLM_EMBEDDING_MODEL: text-embedding-v3
@@ -117,12 +129,15 @@ ingress:
       hosts:
         - contract-agent.example.com
 
-# ==================== 数据库 ====================
-postgresql:
+# ==================== HiDB ====================
+hidb:
   enabled: true
+  image:
+    repository: hidb/pg-compatible
+    tag: latest
   auth:
     database: contract_agent
-    username: contract_agent
+    username: hidb
   primary:
     persistence:
       size: 100Gi

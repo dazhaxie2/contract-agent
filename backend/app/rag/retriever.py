@@ -1,56 +1,106 @@
-"""
-多路混合检索引擎
-向量检索 + 关键词检索 + 图谱检索 -> 融合去重 -> 粗排 -> 精排 -> 校验
-"""
+"""Hybrid retrieval with Milvus + HiDB keyword + Nebula graph."""
+
+from __future__ import annotations
 
 import asyncio
+import re
 import time
-from typing import Optional
+from dataclasses import dataclass, field
+from difflib import SequenceMatcher
+from typing import Any
 
 from loguru import logger
+from sqlalchemy import and_, or_, select
 
 from app.core.config import settings
+from app.core.database import get_read_session
+from app.core.tracing_utils import start_span
+from app.models.document import Document, DocumentChunk
+from app.services.connectors import milvus_connector, nebula_connector
 from app.services.llm_service import llm_service
 
 
+def _tokenize(text: str) -> list[str]:
+    if not text:
+        return []
+    terms = re.findall(r"[A-Za-z0-9\u4e00-\u9fff]{2,}", text.lower())
+    dedup: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        if term in seen:
+            continue
+        seen.add(term)
+        dedup.append(term)
+    return dedup[:24]
+
+
+def _similarity(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a[:300], b[:300]).ratio()
+
+
+def _rrf_merge(sources: list[list["RetrievalResult"]], k: int = 60) -> list["RetrievalResult"]:
+    rrf_scores: dict[str, float] = {}
+    payloads: dict[str, RetrievalResult] = {}
+    for items in sources:
+        for rank, item in enumerate(items, start=1):
+            rrf_scores[item.chunk_id] = rrf_scores.get(item.chunk_id, 0.0) + 1.0 / (k + rank)
+            existing = payloads.get(item.chunk_id)
+            if existing is None or item.score > existing.score:
+                payloads[item.chunk_id] = item
+    merged = list(payloads.values())
+    for item in merged:
+        item.score = float(rrf_scores.get(item.chunk_id, item.score))
+    merged.sort(key=lambda x: x.score, reverse=True)
+    return merged[:160]
+
+
+@dataclass
 class RetrievalResult:
-    def __init__(self, chunk_id: str, content: str, score: float,
-                 source: str, metadata: dict | None = None):
-        self.chunk_id = chunk_id
-        self.content = content
-        self.score = score
-        self.source = source  # vector/keyword/graph
-        self.metadata = metadata or {}
-        self.rerank_score: float | None = None
+    chunk_id: str
+    content: str
+    score: float
+    source: str
+    metadata: dict = field(default_factory=dict)
+    rerank_score: float | None = None
+
+    def payload(self) -> dict:
+        return {
+            "chunk_id": self.chunk_id,
+            "score": round(float(self.score), 6),
+            "source": self.source,
+            "rerank_score": round(float(self.rerank_score), 6) if self.rerank_score is not None else None,
+            "metadata": self.metadata or {},
+            "content": self.content,
+        }
 
 
 class QueryPreprocessor:
-    """Query前置处理: 意图识别 + 实体抽取 + 多Query改写"""
-
     async def preprocess(self, query: str) -> dict:
-        """预处理用户查询"""
-        messages = [
-            {"role": "system", "content": (
-                "你是法律领域NLP专家。请对用户的查询做以下分析，返回JSON格式：\n"
-                '{"intent": "合同审查|法条检索|风险识别|条款比对|合规校验|合同起草|其他", '
-                '"entities": [{"text": "实体", "type": "法律主体|法条|条款|行业|地域"}], '
-                '"filters": {"doc_type": "", "industry": "", "region": "", "effective": true}, '
-                '"rewritten_queries": ["改写1", "改写2", "改写3"]}'
-            )},
-            {"role": "user", "content": query},
-        ]
-
+        prompt = (
+            "You are a legal retrieval preprocessor. Return JSON only with keys: "
+            "intent(string), entities(list of {text,type}), filters(object), rewritten_queries(list of strings)."
+        )
+        messages = [{"role": "system", "content": prompt}, {"role": "user", "content": query}]
         try:
-            result = await llm_service.light_generate(messages, max_tokens=1024)
+            result = await llm_service.light_generate(messages=messages, max_tokens=512)
             import json
+
             parsed = json.loads(result["content"])
+            if not isinstance(parsed, dict):
+                raise ValueError("invalid preprocessor output")
+            parsed.setdefault("intent", "other")
+            parsed.setdefault("entities", [])
+            parsed.setdefault("filters", {})
+            parsed.setdefault("rewritten_queries", [query])
             parsed["original_query"] = query
             return parsed
         except Exception as exc:
-            logger.warning(f"Query预处理失败: {exc}, 使用原始查询")
+            logger.debug(f"Query preprocess fallback: {exc}")
             return {
                 "original_query": query,
-                "intent": "其他",
+                "intent": "other",
                 "entities": [],
                 "filters": {},
                 "rewritten_queries": [query],
@@ -58,9 +108,7 @@ class QueryPreprocessor:
 
 
 class HybridRetriever:
-    """多路混合检索器"""
-
-    def __init__(self):
+    def __init__(self) -> None:
         self.preprocessor = QueryPreprocessor()
 
     async def retrieve(
@@ -70,199 +118,386 @@ class HybridRetriever:
         filters: dict | None = None,
         top_k: int | None = None,
     ) -> list[RetrievalResult]:
-        """
-        完整检索流程:
-        1. Query预处理 -> 2. 并行三路检索 -> 3. 融合去重
-        -> 4. 粗排 -> 5. 精排 -> 6. 校验 -> 7. 二次检索(可选)
-        """
-        start_time = time.perf_counter()
+        results, _debug = await self.retrieve_with_debug(
+            query=query,
+            tenant_id=tenant_id,
+            filters=filters,
+            top_k=top_k,
+        )
+        return results
+
+    async def retrieve_with_debug(
+        self,
+        query: str,
+        tenant_id: str,
+        filters: dict | None = None,
+        top_k: int | None = None,
+    ) -> tuple[list[RetrievalResult], dict]:
+        started = time.perf_counter()
         top_k = top_k or settings.rag.fine_rerank_top_k
 
-        # Step 1: Query预处理
         preprocessed = await self.preprocessor.preprocess(query)
-        queries = preprocessed.get("rewritten_queries", [query])
-        if query not in queries:
-            queries.insert(0, query)
+        rewritten_queries = preprocessed.get("rewritten_queries") or [query]
+        if query not in rewritten_queries:
+            rewritten_queries.insert(0, query)
+        merged_filters = {**(filters or {}), **(preprocessed.get("filters") or {})}
 
-        search_filters = {**(filters or {}), **preprocessed.get("filters", {})}
-
-        # Step 2: 并行三路检索
-        vector_task = self._vector_search(queries, tenant_id, search_filters)
-        keyword_task = self._keyword_search(queries, tenant_id, search_filters)
-        graph_task = self._graph_search(preprocessed.get("entities", []), tenant_id)
-
+        vector_task = self._vector_search(rewritten_queries, tenant_id, merged_filters)
+        keyword_task = self._keyword_search(rewritten_queries, tenant_id, merged_filters)
+        graph_task = self._graph_search(preprocessed.get("entities") or [], tenant_id, merged_filters)
         vector_results, keyword_results, graph_results = await asyncio.gather(
-            vector_task, keyword_task, graph_task,
-            return_exceptions=True,
+            vector_task, keyword_task, graph_task, return_exceptions=True
         )
 
-        # 异常处理
-        all_results = []
-        for name, results in [("vector", vector_results), ("keyword", keyword_results), ("graph", graph_results)]:
-            if isinstance(results, Exception):
-                logger.error(f"{name}检索异常: {results}")
+        channel_errors: list[dict] = []
+        vector_hits: list[RetrievalResult] = []
+        keyword_hits: list[RetrievalResult] = []
+        graph_hits: list[RetrievalResult] = []
+        for channel_name, channel_result in [
+            ("vector", vector_results),
+            ("keyword", keyword_results),
+            ("graph", graph_results),
+        ]:
+            if isinstance(channel_result, Exception):
+                channel_errors.append({"channel": channel_name, "error": str(channel_result)})
+                continue
+            if channel_name == "vector":
+                vector_hits = channel_result
+            elif channel_name == "keyword":
+                keyword_hits = channel_result
             else:
-                all_results.extend(results)
+                graph_hits = channel_result
 
-        # Step 3: 融合去重
-        merged = self._merge_and_dedup(all_results)
-        logger.info(f"检索融合后: {len(merged)} 条结果")
+        merged = _rrf_merge([vector_hits, keyword_hits, graph_hits], k=60)
+        coarse = await self._coarse_rerank(query, merged)
+        fine = await self._fine_rerank(query, coarse)
+        with_parents = await self._attach_parent_context(fine, tenant_id)
+        validated, filtered_out = self._validate_results(with_parents, merged_filters)
 
-        # Step 4: 粗排
-        coarse_ranked = await self._coarse_rerank(query, merged)
+        supplementary_used = False
+        if settings.rag.enable_self_rag and len(validated) < min(3, top_k):
+            supplementary_used = True
+            supplemental = await self._supplementary_search(query, tenant_id, merged_filters)
+            validated = _rrf_merge([validated, supplemental], k=80)
 
-        # Step 5: 精排
-        fine_ranked = await self._fine_rerank(query, coarse_ranked)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        final_results = validated[:top_k]
 
-        # Step 6: 校验
-        validated = await self._validate_results(query, fine_ranked)
+        debug = {
+            "query": query,
+            "preprocessed": preprocessed,
+            "filters": merged_filters,
+            "channels": {
+                "vector": [item.payload() for item in vector_hits],
+                "keyword": [item.payload() for item in keyword_hits],
+                "graph": [item.payload() for item in graph_hits],
+            },
+            "merged": [item.payload() for item in merged],
+            "reranked": [item.payload() for item in fine],
+            "filtered_out": filtered_out,
+            "final": [item.payload() for item in final_results],
+            "self_rag_triggered": supplementary_used,
+            "errors": channel_errors,
+            "latency_ms": round(elapsed_ms, 2),
+        }
+        return final_results, debug
 
-        # Step 7: 如果有效结果不足，触发二次检索(Self-RAG)
-        if settings.rag.enable_self_rag and len(validated) < 3:
-            logger.info("有效结果不足，触发Self-RAG二次检索")
-            supplementary = await self._supplementary_search(query, preprocessed, tenant_id)
-            validated.extend(supplementary)
+    def _base_where(self, tenant_id: str, filters: dict) -> list[Any]:
+        where_clauses: list[Any] = [
+            DocumentChunk.tenant_id == tenant_id,
+            DocumentChunk.vector_status == "ready",
+            DocumentChunk.graph_status == "ready",
+        ]
+        if filters.get("doc_type"):
+            where_clauses.append(Document.doc_type == filters["doc_type"])
+        if filters.get("effective") is True:
+            where_clauses.append(Document.is_effective.is_(True))
+        return where_clauses
 
-        duration_ms = (time.perf_counter() - start_time) * 1000
-        logger.info(f"检索完成: {len(validated)} 条有效结果 | 耗时 {duration_ms:.0f}ms")
+    async def _keyword_search(self, queries: list[str], tenant_id: str, filters: dict) -> list[RetrievalResult]:
+        with start_span("retrieval.keyword_search", {"tenant.id": tenant_id}):
+            return await self._keyword_search_impl(queries, tenant_id, filters)
 
-        return validated[:top_k]
-
-    async def _vector_search(
-        self, queries: list[str], tenant_id: str, filters: dict
-    ) -> list[RetrievalResult]:
-        """向量语义检索"""
-        try:
-            # 批量嵌入所有查询
-            query_vectors = await llm_service.embed(queries)
-
-            results = []
-            # 模拟向量检索 (生产环境对接Milvus)
-            for i, q in enumerate(queries):
-                # 此处应调用Milvus search
-                # collection.search(query_vectors[i], ...)
-                pass
-
-            return results
-        except Exception as exc:
-            logger.error(f"向量检索失败: {exc}")
+    async def _keyword_search_impl(self, queries: list[str], tenant_id: str, filters: dict) -> list[RetrievalResult]:
+        terms: list[str] = []
+        for query in queries:
+            terms.extend(_tokenize(query))
+        terms = terms[:24]
+        if not terms:
             return []
 
-    async def _keyword_search(
-        self, queries: list[str], tenant_id: str, filters: dict
-    ) -> list[RetrievalResult]:
-        """BM25关键词检索"""
+        clauses = [
+            or_(
+                DocumentChunk.search_text.ilike(f"%{term}%"),
+                DocumentChunk.content.ilike(f"%{term}%"),
+            )
+            for term in terms[:10]
+        ]
+        stmt = (
+            select(DocumentChunk, Document)
+            .join(Document, Document.id == DocumentChunk.doc_id)
+            .where(and_(*self._base_where(tenant_id, filters)), or_(*clauses))
+            .limit(max(settings.rag.keyword_top_k * 5, 120))
+        )
+        async with get_read_session() as db:
+            rows = (await db.execute(stmt)).all()
+
+        hits: list[RetrievalResult] = []
+        for chunk, doc in rows:
+            haystack = (chunk.search_text or chunk.content or "").lower()
+            matched_terms = [term for term in terms if term in haystack]
+            if not matched_terms:
+                continue
+            score = min(1.0, 0.25 + (len(matched_terms) / max(1, len(terms))))
+            hits.append(
+                RetrievalResult(
+                    chunk_id=str(chunk.id),
+                    content=chunk.content,
+                    score=score,
+                    source="keyword",
+                    metadata={
+                        "doc_id": str(doc.id),
+                        "doc_title": doc.title,
+                        "doc_type": doc.doc_type,
+                        "source": doc.file_name,
+                        "hierarchy_path": chunk.hierarchy_path,
+                        "is_effective": doc.is_effective,
+                        "applicable_region": doc.applicable_region or [],
+                        "applicable_industry": doc.applicable_industry or [],
+                        "matched_terms": matched_terms[:12],
+                        "keyword_score_explain": f"matched={len(matched_terms)}",
+                    },
+                )
+            )
+
+        hits.sort(key=lambda item: item.score, reverse=True)
+        return hits[: settings.rag.keyword_top_k]
+
+    async def _vector_search(self, queries: list[str], tenant_id: str, filters: dict) -> list[RetrievalResult]:
+        with start_span("retrieval.vector_search", {"tenant.id": tenant_id}):
+            return await self._vector_search_impl(queries, tenant_id, filters)
+
+    async def _vector_search_impl(self, queries: list[str], tenant_id: str, filters: dict) -> list[RetrievalResult]:
+        query_text = " ".join(queries)[:1200]
         try:
-            results = []
-            # 此处应查询PostgreSQL全文索引
-            # SELECT * FROM document_chunks WHERE to_tsvector(content) @@ to_tsquery(query)
-            return results
+            query_vector = (await llm_service.embed([query_text]))[0]
+            vector_hits = await milvus_connector.search(
+                tenant_id=tenant_id,
+                query_vector=query_vector,
+                top_k=max(settings.rag.vector_top_k * 3, 80),
+            )
         except Exception as exc:
-            logger.error(f"关键词检索失败: {exc}")
+            logger.debug(f"vector search fallback to local similarity: {exc}")
+            vector_hits = []
+
+        chunk_ids = [item["chunk_id"] for item in vector_hits if item.get("chunk_id")]
+        if not chunk_ids:
             return []
 
-    async def _graph_search(
-        self, entities: list[dict], tenant_id: str
-    ) -> list[RetrievalResult]:
-        """知识图谱检索"""
-        try:
-            results = []
-            # 此处应查询NebulaGraph
-            # GO FROM entity_id OVER relation_type YIELD ...
-            return results
-        except Exception as exc:
-            logger.error(f"图谱检索失败: {exc}")
+        async with get_read_session() as db:
+            rows = (
+                await db.execute(
+                    select(DocumentChunk, Document)
+                    .join(Document, Document.id == DocumentChunk.doc_id)
+                    .where(
+                        and_(*self._base_where(tenant_id, filters)),
+                        DocumentChunk.id.in_(chunk_ids),
+                    )
+                )
+            ).all()
+
+        row_map = {str(chunk.id): (chunk, doc) for chunk, doc in rows}
+        hits: list[RetrievalResult] = []
+        for index, item in enumerate(vector_hits):
+            chunk_id = str(item.get("chunk_id") or "")
+            row = row_map.get(chunk_id)
+            if row is None:
+                continue
+            chunk, doc = row
+            distance = float(item.get("score", 0.0))
+            score = 1.0 / (1.0 + max(distance, 0.0))
+            hits.append(
+                RetrievalResult(
+                    chunk_id=chunk_id,
+                    content=chunk.content,
+                    score=min(1.0, score + 0.05),
+                    source="vector",
+                    metadata={
+                        "doc_id": str(doc.id),
+                        "doc_title": doc.title,
+                        "doc_type": doc.doc_type,
+                        "source": doc.file_name,
+                        "hierarchy_path": chunk.hierarchy_path,
+                        "is_effective": doc.is_effective,
+                        "applicable_region": doc.applicable_region or [],
+                        "applicable_industry": doc.applicable_industry or [],
+                        "vector_rank": index + 1,
+                        "vector_distance": distance,
+                    },
+                )
+            )
+
+        hits.sort(key=lambda item: item.score, reverse=True)
+        return hits[: settings.rag.vector_top_k]
+
+    async def _graph_search(self, entities: list[dict], tenant_id: str, filters: dict) -> list[RetrievalResult]:
+        with start_span("retrieval.graph_search", {"tenant.id": tenant_id}):
+            return await self._graph_search_impl(entities, tenant_id, filters)
+
+    async def _graph_search_impl(self, entities: list[dict], tenant_id: str, filters: dict) -> list[RetrievalResult]:
+        entity_terms = [str(item.get("text", "")).strip() for item in entities if item.get("text")]
+        entity_terms = [term for term in entity_terms if len(term) >= 2][:10]
+        if not entity_terms:
             return []
 
-    def _merge_and_dedup(self, results: list[RetrievalResult]) -> list[RetrievalResult]:
-        """融合去重 - 按chunk_id去重，保留最高分"""
-        seen = {}
-        for r in results:
-            if r.chunk_id not in seen or r.score > seen[r.chunk_id].score:
-                seen[r.chunk_id] = r
-        merged = list(seen.values())
-        merged.sort(key=lambda x: x.score, reverse=True)
-        return merged[:100]  # Top-100
+        graph_hits = await nebula_connector.search_chunks_by_entities(
+            tenant_id=tenant_id,
+            entities=entity_terms,
+            limit=max(settings.rag.graph_top_k * 4, 80),
+        )
+        chunk_ids = [str(item.get("chunk_id") or "") for item in graph_hits if item.get("chunk_id")]
+        if not chunk_ids:
+            return []
+
+        async with get_read_session() as db:
+            rows = (
+                await db.execute(
+                    select(DocumentChunk, Document)
+                    .join(Document, Document.id == DocumentChunk.doc_id)
+                    .where(and_(*self._base_where(tenant_id, filters)), DocumentChunk.id.in_(chunk_ids))
+                )
+            ).all()
+
+        row_map = {str(chunk.id): (chunk, doc) for chunk, doc in rows}
+        hits: list[RetrievalResult] = []
+        for item in graph_hits:
+            chunk_id = str(item.get("chunk_id") or "")
+            row = row_map.get(chunk_id)
+            if row is None:
+                continue
+            chunk, doc = row
+            matched_entities = list(item.get("matched_entities") or [])
+            score = min(1.0, 0.35 + 0.1 * len(matched_entities))
+            hits.append(
+                RetrievalResult(
+                    chunk_id=chunk_id,
+                    content=chunk.content,
+                    score=score,
+                    source="graph",
+                    metadata={
+                        "doc_id": str(doc.id),
+                        "doc_title": doc.title,
+                        "doc_type": doc.doc_type,
+                        "source": doc.file_name,
+                        "matched_entities": matched_entities,
+                        "hierarchy_path": chunk.hierarchy_path,
+                        "is_effective": doc.is_effective,
+                        "applicable_region": doc.applicable_region or [],
+                        "applicable_industry": doc.applicable_industry or [],
+                    },
+                )
+            )
+
+        hits.sort(key=lambda item: item.score, reverse=True)
+        return hits[: settings.rag.graph_top_k]
 
     async def _coarse_rerank(self, query: str, results: list[RetrievalResult]) -> list[RetrievalResult]:
-        """粗排 - BGE-reranker-base"""
         if not results:
             return []
-
-        top_k = settings.rag.coarse_rerank_top_k
-        try:
-            documents = [r.content for r in results]
-            reranked = await llm_service.rerank(query, documents, top_k=top_k)
-
-            for item in reranked:
-                idx = item["index"]
-                if idx < len(results):
-                    results[idx].rerank_score = item["score"]
-
-            # 按重排分数排序
-            scored = [r for r in results if r.rerank_score is not None]
-            scored.sort(key=lambda x: x.rerank_score, reverse=True)
-            return scored[:top_k]
-        except Exception as exc:
-            logger.warning(f"粗排失败: {exc}, 使用原始排序")
-            return results[:top_k]
+        boost = {"graph": 0.08, "keyword": 0.04, "vector": 0.03}
+        for item in results:
+            lexical = _similarity(query, item.content)
+            item.rerank_score = min(1.0, item.score + boost.get(item.source, 0.0) + lexical * 0.15)
+        ranked = sorted(results, key=lambda x: float(x.rerank_score or 0.0), reverse=True)
+        return ranked[: settings.rag.coarse_rerank_top_k]
 
     async def _fine_rerank(self, query: str, results: list[RetrievalResult]) -> list[RetrievalResult]:
-        """精排 - BGE-reranker-large"""
         if not results:
             return []
-
-        top_k = settings.rag.fine_rerank_top_k
+        documents = [item.content for item in results[:40]]
         try:
-            documents = [r.content for r in results]
-            reranked = await llm_service.rerank(query, documents, top_k=top_k)
-
+            reranked = await llm_service.rerank(query=query, documents=documents, top_k=min(len(documents), 24))
             for item in reranked:
-                idx = item["index"]
-                if idx < len(results):
-                    results[idx].rerank_score = item["score"]
-
-            scored = [r for r in results if r.rerank_score is not None]
-            scored.sort(key=lambda x: x.rerank_score, reverse=True)
-            return scored[:top_k]
+                idx = int(item.get("index", -1))
+                if 0 <= idx < len(results):
+                    results[idx].rerank_score = float(item.get("score", results[idx].score))
         except Exception as exc:
-            logger.warning(f"精排失败: {exc}")
-            return results[:top_k]
+            logger.debug(f"fine rerank fallback: {exc}")
+            for item in results:
+                if item.rerank_score is None:
+                    item.rerank_score = item.score
+        ranked = sorted(results, key=lambda x: float(x.rerank_score or 0.0), reverse=True)
+        return ranked[: settings.rag.fine_rerank_top_k]
 
-    async def _validate_results(self, query: str, results: list[RetrievalResult]) -> list[RetrievalResult]:
-        """CRAG校验 - 相关性/事实性/法律效力校验"""
-        if not settings.rag.enable_crag or not results:
+    async def _attach_parent_context(self, results: list[RetrievalResult], tenant_id: str) -> list[RetrievalResult]:
+        if not results:
             return results
+        chunk_ids = [item.chunk_id for item in results]
+        async with get_read_session() as db:
+            rows = (
+                await db.scalars(
+                    select(DocumentChunk)
+                    .where(DocumentChunk.tenant_id == tenant_id, DocumentChunk.id.in_(chunk_ids))
+                )
+            ).all()
+            parent_ids = [row.parent_chunk_id for row in rows if row.parent_chunk_id]
+            if not parent_ids:
+                return results
+            parents = (
+                await db.scalars(
+                    select(DocumentChunk).where(
+                        DocumentChunk.tenant_id == tenant_id,
+                        DocumentChunk.id.in_(parent_ids),
+                    )
+                )
+            ).all()
 
-        validated = []
-        for r in results:
-            if r.rerank_score and r.rerank_score >= settings.rag.relevance_threshold:
-                validated.append(r)
-            else:
-                # 可选：用小模型二次校验
-                validated.append(r)
+        row_map = {str(row.id): row for row in rows}
+        parent_map = {str(item.id): item for item in parents}
+        for item in results:
+            row = row_map.get(item.chunk_id)
+            if not row or not row.parent_chunk_id:
+                continue
+            parent = parent_map.get(str(row.parent_chunk_id))
+            if not parent:
+                continue
+            item.metadata["parent_chunk_id"] = str(parent.id)
+            item.metadata["parent_hierarchy_path"] = parent.hierarchy_path
+            item.metadata["parent_excerpt"] = (parent.content or "")[:300]
+        return results
 
-        return validated
+    def _validate_results(self, results: list[RetrievalResult], filters: dict) -> tuple[list[RetrievalResult], list[dict]]:
+        if not results:
+            return [], []
+        threshold = float(settings.rag.relevance_threshold or 0.0)
+        accepted: list[RetrievalResult] = []
+        rejected: list[dict] = []
+        for item in results:
+            score = float(item.rerank_score if item.rerank_score is not None else item.score)
+            if settings.rag.enable_crag and score < threshold:
+                rejected.append({"chunk_id": item.chunk_id, "reason": "below_threshold", "score": score})
+                continue
+            if filters.get("effective") is True and not item.metadata.get("is_effective", True):
+                rejected.append({"chunk_id": item.chunk_id, "reason": "ineffective_document"})
+                continue
+            if filters.get("region"):
+                regions = str(item.metadata.get("applicable_region", ""))
+                if filters["region"] not in regions and regions:
+                    rejected.append({"chunk_id": item.chunk_id, "reason": "region_mismatch"})
+                    continue
+            if filters.get("industry"):
+                industries = str(item.metadata.get("applicable_industry", ""))
+                if filters["industry"] not in industries and industries:
+                    rejected.append({"chunk_id": item.chunk_id, "reason": "industry_mismatch"})
+                    continue
+            accepted.append(item)
+        return accepted, rejected
 
-    async def _supplementary_search(
-        self, query: str, preprocessed: dict, tenant_id: str
-    ) -> list[RetrievalResult]:
-        """Self-RAG二次检索"""
-        messages = [
-            {"role": "system", "content": "请基于原始查询生成2个不同角度的补充检索查询，用JSON数组返回。"},
-            {"role": "user", "content": query},
-        ]
-        try:
-            result = await llm_service.light_generate(messages, max_tokens=256)
-            import json
-            new_queries = json.loads(result["content"])
-            if isinstance(new_queries, list):
-                vectors = await llm_service.embed(new_queries[:2])
-                # 补充向量检索...
-                return []
-        except Exception:
-            pass
-        return []
+    async def _supplementary_search(self, query: str, tenant_id: str, filters: dict) -> list[RetrievalResult]:
+        expanded = [query] + [f"{query} 法律依据", f"{query} 合规要点"]
+        keyword = await self._keyword_search(expanded, tenant_id, filters=filters)
+        vector = await self._vector_search(expanded, tenant_id, filters=filters)
+        return _rrf_merge([keyword, vector], k=100)[:8]
 
 
 hybrid_retriever = HybridRetriever()

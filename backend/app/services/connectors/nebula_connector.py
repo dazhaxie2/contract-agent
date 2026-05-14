@@ -85,9 +85,20 @@ class NebulaConnector:
             'CREATE TAG IF NOT EXISTS `entity`(name string);',
             "CREATE EDGE IF NOT EXISTS `mentions`(weight double);",
         ]
+
+        def _run_all() -> None:
+            assert self._pool is not None
+            session = self._pool.get_session(settings.nebula.user, settings.nebula.password)
+            try:
+                for sql in statements:
+                    resp = session.execute(sql)
+                    if not resp.is_succeeded():
+                        raise RuntimeError(resp.error_msg())
+            finally:
+                session.release()
+
         try:
-            for sql in statements:
-                await self._execute(sql)
+            await asyncio.to_thread(_run_all)
             self._ready = True
             return True
         except Exception as exc:

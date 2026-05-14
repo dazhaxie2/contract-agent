@@ -16,8 +16,8 @@ services:
       - "8000:8000"
     environment:
       - DB_PROVIDER=hidb_pg
-      - DB_DSN_WRITE=postgresql+asyncpg://hidb:hidb123@hidb:5432/contract_agent?sslmode=prefer
-      - DB_DSN_READ=postgresql+asyncpg://hidb:hidb123@hidb:5432/contract_agent?sslmode=prefer
+      - DB_DSN_WRITE=postgresql+asyncpg://hidb:hidb123@hidb:5432/contract_agent
+      - DB_DSN_READ=postgresql+asyncpg://hidb:hidb123@hidb:5432/contract_agent
       - DB_READ_TARGET=hidb
       - DB_CUTOVER_PERCENT=100
       - DB_DUAL_WRITE_ENABLED=false
@@ -36,6 +36,10 @@ services:
       - LEGAL_SOURCE_SEED_URLS=https://www.gov.cn/zhengce/zhengceku/
       - LEGAL_SOURCE_TENANT_ALLOWLIST=default
       - LEGAL_SOURCE_SYNC_INTERVAL_MINUTES=360
+      - NEBULA_HOST=nebula-graphd
+      - NEBULA_PORT=9669
+      - NEBULA_USER=root
+      - NEBULA_PASSWORD=nebula
       - JAEGER_ENDPOINT=http://jaeger:4317
       - PROMETHEUS_ENABLED=true
       - LOG_LEVEL=DEBUG
@@ -68,12 +72,9 @@ services:
       dockerfile: Dockerfile
     container_name: contract-agent-frontend
     ports:
-      - "3000:3000"
+      - "3000:80"
     environment:
       - VITE_API_BASE_URL=http://localhost:8000
-    volumes:
-      - ./frontend/src:/app/src  # 开发时热重载
-      - /app/node_modules
     depends_on:
       - backend
     networks:
@@ -124,14 +125,17 @@ services:
 
   # -------------------- Milvus 向量数据库 --------------------
   milvus:
-    image: milvusdb/milvus:latest
+    image: milvusdb/milvus:v2.5.4
     container_name: contract-agent-milvus
+    command: ["milvus", "run", "standalone"]
     ports:
       - "19530:19530"  # gRPC
       - "9091:9091"    # 指标
     environment:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
+      MINIO_ACCESSKEYID: minioadmin
+      MINIO_SECRETACCESSKEY: minioadmin123
     volumes:
       - milvus_data:/var/lib/milvus
     depends_on:
@@ -140,6 +144,12 @@ services:
     networks:
       - contract-agent-net
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
 
   # -------------------- etcd (Milvus依赖) --------------------
   etcd:
@@ -271,6 +281,126 @@ services:
       - contract-agent-net
     restart: unless-stopped
 
+  # -------------------- Nebula Graph (元数据) --------------------
+  nebula-metad:
+    image: vesoft/nebula-metad:v3.8.0
+    container_name: contract-agent-nebula-metad
+    environment:
+      USER: root
+      TZ: Asia/Shanghai
+    command:
+      - --meta_server_addrs=nebula-metad:9559
+      - --local_ip=nebula-metad
+      - --ws_ip=nebula-metad
+      - --port=9559
+      - --data_path=/data/meta
+      - --log_dir=/logs
+      - --v=0
+      - --minloglevel=0
+    volumes:
+      - nebula_meta_data:/data/meta
+      - nebula_meta_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://nebula-metad:19559/status || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - contract-agent-net
+    restart: unless-stopped
+
+  # -------------------- Nebula Graph (存储) --------------------
+  nebula-storaged:
+    image: vesoft/nebula-storaged:v3.8.0
+    container_name: contract-agent-nebula-storaged
+    environment:
+      USER: root
+      TZ: Asia/Shanghai
+    command:
+      - --meta_server_addrs=nebula-metad:9559
+      - --local_ip=nebula-storaged
+      - --ws_ip=nebula-storaged
+      - --port=9779
+      - --data_path=/data/storage
+      - --log_dir=/logs
+      - --v=0
+      - --minloglevel=0
+    depends_on:
+      nebula-metad:
+        condition: service_healthy
+    volumes:
+      - nebula_storage_data:/data/storage
+      - nebula_storage_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://nebula-storaged:19779/status || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - contract-agent-net
+    restart: unless-stopped
+
+  # -------------------- Nebula Graph (查询入口) --------------------
+  nebula-graphd:
+    image: vesoft/nebula-graphd:v3.8.0
+    container_name: contract-agent-nebula-graphd
+    environment:
+      USER: root
+      TZ: Asia/Shanghai
+    command:
+      - --meta_server_addrs=nebula-metad:9559
+      - --port=9669
+      - --local_ip=nebula-graphd
+      - --ws_ip=nebula-graphd
+      - --log_dir=/logs
+      - --v=0
+      - --minloglevel=0
+    depends_on:
+      nebula-storaged:
+        condition: service_started
+    ports:
+      - "9669:9669"
+    volumes:
+      - nebula_graph_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://nebula-graphd:19669/status || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - contract-agent-net
+    restart: unless-stopped
+
+  # -------- Nebula init: 一次性把 storaged 注册到集群 --------
+  nebula-init:
+    image: vesoft/nebula-console:v3.8.0
+    container_name: contract-agent-nebula-init
+    depends_on:
+      nebula-graphd:
+        condition: service_healthy
+    networks:
+      - contract-agent-net
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e;
+        echo "Registering storaged host...";
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          if /usr/local/bin/nebula-console -addr nebula-graphd -port 9669 \
+              -u root -p nebula \
+              -e "ADD HOSTS \"nebula-storaged\":9779" 2>&1 | tee /tmp/out; then
+            grep -qE "(Existed|successfully|already)" /tmp/out && exit 0;
+            grep -q "Got result" /tmp/out && exit 0;
+          fi;
+          sleep 3;
+        done;
+        echo "ADD HOSTS may have failed; check logs";
+        exit 0
+    restart: "no"
+
 # -------------------- 网络配置 --------------------
 networks:
   contract-agent-net:
@@ -290,3 +420,8 @@ volumes:
   kafka_data:
   prometheus_data:
   grafana_data:
+  nebula_meta_data:
+  nebula_meta_logs:
+  nebula_storage_data:
+  nebula_storage_logs:
+  nebula_graph_logs:

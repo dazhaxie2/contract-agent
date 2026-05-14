@@ -41,9 +41,16 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         "Pragma": "no-cache",
     }
 
+    SWAGGER_PATHS = ("/docs", "/redoc", "/openapi.json")
+
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
+        path = request.url.path
+        is_swagger = any(path == p or path.startswith(p + "/") for p in self.SWAGGER_PATHS)
         for header, value in self.SECURITY_HEADERS.items():
-            if header not in response.headers:
-                response.headers[header] = value
+            if header in response.headers:
+                continue
+            if is_swagger and header == "Content-Security-Policy":
+                continue
+            response.headers[header] = value
         return response

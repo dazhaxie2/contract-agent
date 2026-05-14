@@ -23,6 +23,9 @@ FROM python:3.12-slim AS runtime
 # 安全：创建非root用户
 RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser
 
+# 换成阿里云镜像源
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources
+
 # 安装运行时系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \

@@ -9,7 +9,8 @@ venv/
 dist/
 build/
 public/
-
+.claude/
+.codeartsdoer/
 
 # Node
 node_modules/
@@ -29,7 +30,7 @@ backups/
 .idea/
 *.swp
 .DS_Store
-.codeartsdoer/
+
 
 # Alembic
 alembic/versions/*.pyc

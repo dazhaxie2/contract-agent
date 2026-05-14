@@ -111,6 +111,10 @@ function normalizePlan(plan?: AgentExecution['plan']): AgentPlan | null {
   return candidate.decision_id && Array.isArray(candidate.steps) ? candidate : null;
 }
 
+function uploadItemToFile(item?: UploadFile): File | undefined {
+  return (item?.originFileObj as File | undefined) || (item as unknown as File | undefined);
+}
+
 const ReviewWorkspace: React.FC = () => {
   const [searchParams] = useSearchParams();
   const [title, setTitle] = useState('');
@@ -140,7 +144,7 @@ const ReviewWorkspace: React.FC = () => {
   const [error, setError] = useState('');
 
   const tenantId = localStorage.getItem('tenant_id') || 'default';
-  const selectedFile = useMemo(() => fileList[0]?.originFileObj as File | undefined, [fileList]);
+  const selectedFile = useMemo(() => uploadItemToFile(fileList[0]), [fileList]);
   const report = execution?.review_report;
 
   const addMessage = (role: ChatMessage['role'], content: string, plan?: AgentPlan) => {
@@ -219,13 +223,9 @@ const ReviewWorkspace: React.FC = () => {
     return session.id;
   };
 
-  const prepareContract = async () => {
-    if (activeDocument) return activeDocument;
-    if (!selectedFile) return null;
-
-    setBusyLabel('合同入库中');
-    const uploaded = await documentApi.upload(selectedFile, {
-      title: title || selectedFile.name,
+  const ingestFile = async (file: File, displayTitle?: string) => {
+    const uploaded = await documentApi.upload(file, {
+      title: displayTitle || file.name,
       doc_type: 'contract',
       sync: false,
     });
@@ -245,6 +245,15 @@ const ReviewWorkspace: React.FC = () => {
       documentApi.get(current.doc_id),
       documentApi.getChunks(current.doc_id, true),
     ]);
+    return { doc, fullChunks };
+  };
+
+  const prepareContract = async () => {
+    if (activeDocument) return activeDocument;
+    if (!selectedFile) return null;
+
+    setBusyLabel('合同入库中');
+    const { doc, fullChunks } = await ingestFile(selectedFile, title || selectedFile.name);
     setActiveDocument(doc);
     setChunks(fullChunks);
     return doc;
@@ -330,6 +339,61 @@ const ReviewWorkspace: React.FC = () => {
     }
   };
 
+  const runBatchReview = async () => {
+    const files = fileList.map(uploadItemToFile).filter((item): item is File => Boolean(item));
+    if (!files.length) {
+      message.warning('请先选择合同文件');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const results: AgentExecution[] = [];
+      for (const file of files) {
+        setBusyLabel(`批量审查：${file.name}`);
+        const { doc, fullChunks } = await ingestFile(file, file.name);
+        const session = await sessionApi.create(`批量合同审查：${doc.title}`, {
+          mode: 'batch_review',
+          doc_id: doc.id,
+          review_type: reviewType,
+        });
+        const query = defaultQuery(doc);
+        const plan = await agentApi.plan({
+          query,
+          session_id: session.id,
+          tenant_id: tenantId,
+          task_type: 'contract_review',
+          filters: { doc_id: doc.id, document_ids: [doc.id] },
+          context: {
+            doc_id: doc.id,
+            document_ids: [doc.id],
+            doc_title: doc.title,
+            review_type: reviewType,
+            source: 'batch_review',
+          },
+        });
+        const result = await agentApi.executeDecision(plan.decision_id, {
+          confirmed: true,
+          comment: '用户在合同助手工作台发起批量审查',
+        });
+        results.push(result);
+        setActiveDocument(doc);
+        setChunks(fullChunks);
+        setCurrentPlan(normalizePlan(result.plan) || plan);
+        setExecution(result);
+      }
+      addMessage('assistant', `批量审查完成，共处理 ${results.length} 份合同。`);
+      await refreshHistory();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '批量审查失败';
+      setError(msg);
+      message.error(msg);
+    } finally {
+      setBusy(false);
+      setBusyLabel('');
+    }
+  };
+
   const loadHistory = async (row: AgentExecution) => {
     const id = row.execution_id || row.id;
     if (!id) return;
@@ -375,6 +439,18 @@ const ReviewWorkspace: React.FC = () => {
     const link = window.document.createElement('a');
     link.href = url;
     link.download = `${activeDocument?.title || 'contract-review'}.md`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadExport = async (format: 'docx' | 'pdf') => {
+    const id = execution?.execution_id || execution?.id;
+    if (!id) return;
+    const blob = await agentApi.exportExecution(id, format);
+    const url = URL.createObjectURL(blob);
+    const link = window.document.createElement('a');
+    link.href = url;
+    link.download = `${activeDocument?.title || 'contract-review'}.${format}`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -487,10 +563,11 @@ const ReviewWorkspace: React.FC = () => {
               <Select value={reviewType} options={REVIEW_TYPES} onChange={setReviewType} />
               <Upload.Dragger
                 accept=".pdf,.doc,.docx,.txt,.md"
-                maxCount={1}
+                multiple
+                maxCount={10}
                 fileList={fileList}
                 beforeUpload={(file) => {
-                  setFileList([file]);
+                  setFileList((items) => [...items.filter((item) => item.uid !== file.uid), file]);
                   setTitle((value) => value || file.name);
                   setActiveDocument(null);
                   setChunks([]);
@@ -499,8 +576,8 @@ const ReviewWorkspace: React.FC = () => {
                   setExecution(null);
                   return false;
                 }}
-                onRemove={() => {
-                  setFileList([]);
+                onRemove={(file) => {
+                  setFileList((items) => items.filter((item) => item.uid !== file.uid));
                   setActiveDocument(null);
                   setChunks([]);
                 }}
@@ -512,6 +589,9 @@ const ReviewWorkspace: React.FC = () => {
               </Upload.Dragger>
               <Button type="primary" icon={<PlayCircleOutlined />} onClick={() => createPlan()} loading={busy} block>
                 生成审查计划
+              </Button>
+              <Button icon={<PlayCircleOutlined />} onClick={runBatchReview} loading={busy} block>
+                批量审查
               </Button>
             </Space>
           </div>
@@ -641,6 +721,12 @@ const ReviewWorkspace: React.FC = () => {
             </Button>
             <Button icon={<DownloadOutlined />} disabled={!execution?.result} onClick={downloadMarkdown}>
               下载 Markdown
+            </Button>
+            <Button icon={<DownloadOutlined />} disabled={!execution?.result} onClick={() => downloadExport('docx')}>
+              下载 DOCX
+            </Button>
+            <Button icon={<DownloadOutlined />} disabled={!execution?.result} onClick={() => downloadExport('pdf')}>
+              下载 PDF
             </Button>
           </Space>
         </Space>

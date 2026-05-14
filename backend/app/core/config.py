@@ -210,6 +210,7 @@ class LegalSourceSettings(BaseSettings):
 
 class AliyunLLMSettings(BaseSettings):
     api_key: str = Field(default="", alias="DASHSCOPE_API_KEY")
+    require_external: bool = Field(default=False, alias="LLM_REQUIRE_EXTERNAL")
     generation_model: str = Field(default="qwen-max", alias="LLM_GENERATION_MODEL")
     generation_temperature: float = Field(default=0.1, alias="LLM_GENERATION_TEMPERATURE")
     generation_top_p: float = Field(default=0.8, alias="LLM_GENERATION_TOP_P")

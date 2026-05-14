@@ -1,11 +1,12 @@
 """认证API"""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.core.security import (
     create_access_token, create_refresh_token,
     verify_password, get_password_hash, decode_token,
+    Roles,
 )
 
 router = APIRouter()
@@ -69,3 +70,15 @@ async def refresh_token(refresh_token: str):
         access_token=create_access_token(token_data),
         refresh_token=create_refresh_token(token_data),
     )
+
+
+@router.get("/me")
+async def current_user(request: Request):
+    role = getattr(request.state, "user_role", "viewer")
+    permissions = sorted(Roles.PERMISSIONS.get(role, set()))
+    return {
+        "user_id": getattr(request.state, "user_id", ""),
+        "tenant_id": getattr(request.state, "tenant_id", "default"),
+        "role": role,
+        "permissions": permissions,
+    }

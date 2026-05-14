@@ -47,6 +47,21 @@ const PromptVersionHistory: React.FC = () => {
             { title: '版本', dataIndex: 'version', render: (value) => <Tag>v{value}</Tag>, width: 100 },
             { title: '变更说明', dataIndex: 'change_log', render: (_, row) => row.change_log || row.changelog || '-' },
             { title: '输出格式', dataIndex: 'output_format', width: 120 },
+            { title: '质量评分', dataIndex: 'quality_score', width: 120, render: (value) => value ?? '-' },
+            {
+              title: '评估结果',
+              width: 180,
+              render: (_, row) =>
+                row.evaluation_results ? (
+                  <Space wrap>
+                    {Object.entries(row.evaluation_results).map(([key, value]) => (
+                      <Tag key={key}>{`${key}: ${String(value)}`}</Tag>
+                    ))}
+                  </Space>
+                ) : (
+                  '-'
+                ),
+            },
             { title: '创建时间', dataIndex: 'created_at', width: 220 },
           ]}
         />

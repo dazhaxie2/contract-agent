@@ -10,6 +10,7 @@ dist/
 build/
 public/
 
+
 # Node
 node_modules/
 frontend/.next/
@@ -28,6 +29,7 @@ backups/
 .idea/
 *.swp
 .DS_Store
+.codeartsdoer/
 
 # Alembic
 alembic/versions/*.pyc

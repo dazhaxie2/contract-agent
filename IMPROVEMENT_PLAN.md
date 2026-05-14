@@ -44,8 +44,12 @@
 - [x] LLM-as-judge 自动评分服务 (`services/evaluation_service.py`)
 - [x] 批量评分 + 指标聚合 API
 - [x] 前端 evaluation API 对接 (`services/api.ts evaluationApi`)
-- [ ] 合同合规领域测试集（1000+ 问答对）— 需法务专家构建
-- [ ] CI 离线评估流水线 — 需接入测试集后搭建
+- [x] 评估测试集骨架（10条覆盖9类场景）(`tests/fixtures/evaluation_test_set.json`)
+- [x] 评估运行器 + CLI (`tests/test_evaluation_suite.py` + `scripts/run_evaluation.py`)
+- [x] CI 评估流水线 (`.github/workflows/evaluation.yml`)
+- [x] 评估基础设施测试（5个pytest）(`tests/test_evaluation_infra.py`)
+- [x] Alembic migration for UserProfile (`alembic/versions/20260514_0004_user_profiles.py`)
+- [ ] 扩展测试集到 1000+ 条（需法务专家参与）
 
 ### 7. Redis缓存落地
 - [x] 缓存服务框架 (`services/cache_service.py`)

@@ -157,18 +157,28 @@ export interface DeploymentInfo {
 export interface ABTest {
   id: string;
   name: string;
+  description?: string;
+  test_type?: 'model' | 'prompt' | 'retrieval' | 'rerank';
   status: 'draft' | 'running' | 'completed' | 'stopped';
-  model_a: string;
-  model_b: string;
+  model_a?: string;
+  model_b?: string;
+  control_config_id?: string;
+  treatment_config_id?: string;
   traffic_split: number;
-  metrics: {
+  primary_metric?: string;
+  metrics?: {
     model_a_score: number;
     model_b_score: number;
     model_a_latency: number;
     model_b_latency: number;
     sample_count: number;
   };
+  control_metrics?: Record<string, unknown>;
+  treatment_metrics?: Record<string, unknown>;
+  winner?: string | null;
   created_at: string;
+  started_at?: string;
+  ended_at?: string;
 }
 
 function mapDeployment(item: Record<string, unknown>): DeploymentInfo {
@@ -230,6 +240,7 @@ export const modelApi = {
   undeploy: async (id: string) => (await api.post(`/models/${id}/undeploy`)).data,
   listABTests: async () => (await api.get<ABTest[]>('/models/ab-tests')).data,
   createABTest: async (data: Partial<ABTest>) => (await api.post<ABTest>('/models/ab-tests', data)).data,
+  startABTest: async (id: string) => (await api.post(`/models/ab-tests/${id}/start`)).data,
   stopABTest: async (id: string) => (await api.post(`/models/ab-tests/${id}/stop`)).data,
 };
 
@@ -273,6 +284,8 @@ export interface PromptVersion {
   change_log?: string;
   changelog?: string;
   output_format?: string;
+  quality_score?: number | null;
+  evaluation_results?: Record<string, unknown>;
   created_at: string;
   author?: string;
 }
@@ -577,6 +590,13 @@ export const agentApi = {
     );
   },
   getExecution: async (id: string) => (await api.get<AgentExecution>(`/agents/executions/${id}`)).data,
+  exportExecution: async (id: string, format: 'markdown' | 'docx' | 'pdf') =>
+    (
+      await api.get<Blob>(`/agents/executions/${id}/export`, {
+        params: { format },
+        responseType: 'blob',
+      })
+    ).data,
   submitFeedback: async (id: string, score: number, comment = '') =>
     (await api.post(`/agents/executions/${id}/feedback`, null, { params: { score, comment } })).data,
 };

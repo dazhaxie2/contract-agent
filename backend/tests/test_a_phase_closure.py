@@ -10,6 +10,7 @@ from sqlalchemy import func, select, text
 
 from app.core.database import ReadSessionLocal
 from app.core.config import settings
+from app.core.security import create_access_token
 from app.models.agent import AgentExecution
 from app.services.connectors.legal_source_connector import LegalSourceDocument
 from app.services.llm_service import llm_service
@@ -24,6 +25,22 @@ def unwrap_json(resp) -> dict | list:
 
 @pytest.mark.asyncio
 async def test_models_crud_and_compat(app_client: AsyncClient, auth_headers: dict[str, str]) -> None:
+    me_resp = await app_client.get("/api/v1/auth/me", headers=auth_headers)
+    assert me_resp.status_code == 200
+    me_payload = unwrap_json(me_resp)
+    assert me_payload["role"] == "admin"
+    assert "model:write" in me_payload["permissions"]
+
+    viewer_token = create_access_token(
+        {
+            "sub": "00000000-0000-0000-0000-000000000002",
+            "username": "viewer",
+            "role": "viewer",
+            "tenant_id": "default",
+        }
+    )
+    viewer_headers = {"Authorization": f"Bearer {viewer_token}"}
+
     payload = {
         "name": "gpt-legal",
         "display_name": "GPT Legal",
@@ -49,6 +66,9 @@ async def test_models_crud_and_compat(app_client: AsyncClient, auth_headers: dic
         "extra_headers": {},
         "extra_config": {},
     }
+    viewer_create_resp = await app_client.post("/api/v1/models", json=payload, headers=viewer_headers)
+    assert viewer_create_resp.status_code == 403
+
     create_resp = await app_client.post("/api/v1/models", json=payload, headers=auth_headers)
     assert create_resp.status_code == 200, create_resp.text
     created = unwrap_json(create_resp)
@@ -294,6 +314,15 @@ async def test_agent_plan_confirm_execute_and_feedback_regression(
     assert detail_payload["decision_id"] == plan_payload["decision_id"]
     assert detail_payload["plan"]["decision_id"] == plan_payload["decision_id"]
 
+    for export_format in ["markdown", "docx", "pdf"]:
+        export_resp = await app_client.get(
+            f"/api/v1/agents/executions/{execute_payload['execution_id']}/export",
+            params={"format": export_format},
+            headers=auth_headers,
+        )
+        assert export_resp.status_code == 200
+        assert export_resp.content
+
     feedback_resp = await app_client.post(
         f"/api/v1/agents/executions/{execute_payload['execution_id']}/feedback",
         params={"score": 2, "comment": "付款风险应引用验收条款"},
@@ -334,6 +363,223 @@ async def test_agent_plan_confirm_execute_and_feedback_regression(
     assert workbench["plan_success_rate"] == 1.0
     assert workbench["user_feedback_avg"] == 2
     assert workbench["regression_cases_total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_contract_workbench_api_e2e_acceptance(app_client: AsyncClient, monkeypatch) -> None:
+    monkeypatch.setattr(settings.rag, "enable_crag", False)
+
+    login_resp = await app_client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "password123"},
+    )
+    assert login_resp.status_code == 200, login_resp.text
+    login_payload = unwrap_json(login_resp)
+    headers = {"Authorization": f"Bearer {login_payload['access_token']}"}
+
+    contract_text = (
+        "采购合同。付款条款：甲方应在验收合格后十个工作日内付款。"
+        "违约条款：任一方迟延履行应承担违约责任。"
+        "解除条款：连续违约超过十五日守约方可以解除合同。"
+        "争议解决：提交上海仲裁委员会仲裁。"
+    ) * 8
+    upload_resp = await app_client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("purchase-contract.txt", contract_text.encode("utf-8"), "text/plain")},
+        data={"doc_type": "contract", "title": "采购合同 E2E", "sync": "true"},
+        headers=headers,
+    )
+    assert upload_resp.status_code == 200, upload_resp.text
+    upload_payload = unwrap_json(upload_resp)
+    assert upload_payload["status"] == "completed"
+    doc_id = upload_payload["doc_id"]
+
+    session_resp = await app_client.post(
+        "/api/v1/sessions",
+        json={"title": "合同助手 E2E", "metadata": {"doc_id": doc_id}},
+        headers=headers,
+    )
+    assert session_resp.status_code == 200, session_resp.text
+    session_id = unwrap_json(session_resp)["id"]
+
+    async def fake_agent_execute(query: str, context: dict | None = None):
+        from app.agents.base import AgentResult, AgentStep, StepType
+
+        assert "采购合同" in query
+        assert context and context["references"]
+        return AgentResult(
+            success=True,
+            output="中风险：付款条款需要明确验收标准和发票提交条件。建议补充验收流程、付款前置条件和逾期付款责任。",
+            steps=[
+                AgentStep(
+                    step_type=StepType.OBSERVATION,
+                    content="compliance review completed",
+                    tool_name="compliance.review",
+                    tokens_used=31,
+                    latency_ms=4.0,
+                )
+            ],
+            metadata={"mode": "api_e2e"},
+        )
+
+    monkeypatch.setattr("app.api.v1.agents.orchestrator_agent.execute", fake_agent_execute)
+
+    plan_resp = await app_client.post(
+        "/api/v1/agents/plan",
+        json={
+            "query": "帮我审这份采购合同，重点看付款、违约、解除，并生成修改稿和 Markdown 报告",
+            "task_type": "contract_review",
+            "session_id": session_id,
+            "tenant_id": "default",
+            "filters": {"doc_id": doc_id, "document_ids": [doc_id]},
+            "context": {"doc_id": doc_id, "doc_title": "采购合同 E2E", "review_type": "purchase"},
+        },
+        headers=headers,
+    )
+    assert plan_resp.status_code == 200, plan_resp.text
+    plan_payload = unwrap_json(plan_resp)
+    assert plan_payload["requires_confirmation"] is True
+    assert plan_payload["decision_id"].startswith("dec_")
+
+    execute_resp = await app_client.post(
+        f"/api/v1/agents/decisions/{plan_payload['decision_id']}/execute",
+        json={"confirmed": True, "comment": "E2E 确认执行"},
+        headers=headers,
+    )
+    assert execute_resp.status_code == 200, execute_resp.text
+    execute_payload = unwrap_json(execute_resp)
+    assert execute_payload["status"] == "completed"
+    assert execute_payload["review_report"]["risk_items"]
+    assert execute_payload["references"]
+
+    citation_id = execute_payload["references"][0]["citation_id"]
+    citation_resp = await app_client.get(f"/api/v1/citations/{citation_id}", headers=headers)
+    assert citation_resp.status_code == 200, citation_resp.text
+    citation_payload = unwrap_json(citation_resp)
+    assert citation_payload["chunk_id"]
+    assert "付款" in citation_payload["excerpt"] or citation_payload["excerpt"]
+
+    feedback_resp = await app_client.post(
+        f"/api/v1/agents/executions/{execute_payload['execution_id']}/feedback",
+        params={"score": 4, "comment": "E2E 结果可用，后续补充修改稿格式"},
+        headers=headers,
+    )
+    assert feedback_resp.status_code == 200, feedback_resp.text
+    assert unwrap_json(feedback_resp)["regression_case_id"].startswith("reg_")
+
+
+@pytest.mark.asyncio
+async def test_contract_workbench_failure_scenarios(
+    app_client: AsyncClient, auth_headers: dict[str, str], monkeypatch
+) -> None:
+    unauthorized_resp = await app_client.get("/api/v1/documents")
+    assert unauthorized_resp.status_code == 401
+
+    empty_upload_resp = await app_client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("empty.txt", b"", "text/plain")},
+        data={"doc_type": "contract", "title": "Empty", "sync": "true"},
+        headers=auth_headers,
+    )
+    assert empty_upload_resp.status_code == 400
+    assert "empty" in empty_upload_resp.text
+
+    async def failing_process_once(**_: dict):
+        raise RuntimeError("parser exploded")
+
+    with monkeypatch.context() as patch_ctx:
+        patch_ctx.setattr("app.services.ingestion_service.ingestion_service._process_once", failing_process_once)
+        failed_upload_resp = await app_client.post(
+            "/api/v1/documents/upload",
+            files={"file": ("broken.txt", b"not really a valid contract" * 8, "text/plain")},
+            data={"doc_type": "contract", "title": "Broken", "sync": "true"},
+            headers=auth_headers,
+        )
+    assert failed_upload_resp.status_code == 200, failed_upload_resp.text
+    failed_payload = unwrap_json(failed_upload_resp)
+    assert failed_payload["status"] == "failed"
+    assert "parser exploded" in failed_payload["error_message"]
+    assert failed_payload["dead_letter"] is True
+
+    session_resp = await app_client.post(
+        "/api/v1/sessions",
+        json={"title": "Failure Scenarios", "metadata": {}},
+        headers=auth_headers,
+    )
+    assert session_resp.status_code == 200
+    session_id = unwrap_json(session_resp)["id"]
+
+    async def no_results_retrieve(*_: object, **__: dict):
+        return [], {
+            "preprocessed": {"intent": "contract_review", "entities": []},
+            "channels": {"vector": [], "keyword": [], "graph": []},
+            "merged": [],
+            "reranked": [],
+            "filtered_out": [],
+            "latency_ms": 0.0,
+        }
+
+    async def no_evidence_agent_execute(query: str, context: dict | None = None):
+        from app.agents.base import AgentResult, AgentStep, StepType
+
+        assert context and not context["references"]
+        return AgentResult(
+            success=True,
+            output="未检索到可验证依据，不能形成确定审查结论。",
+            steps=[
+                AgentStep(
+                    step_type=StepType.FINAL,
+                    content="no evidence",
+                    tokens_used=7,
+                    latency_ms=1.0,
+                )
+            ],
+            metadata={"no_evidence": True},
+        )
+
+    with monkeypatch.context() as patch_ctx:
+        patch_ctx.setattr("app.api.v1.agents.hybrid_retriever.retrieve_with_debug", no_results_retrieve)
+        patch_ctx.setattr("app.api.v1.agents.orchestrator_agent.execute", no_evidence_agent_execute)
+        no_results_resp = await app_client.post(
+            "/api/v1/agents/execute",
+            json={
+                "query": "审查一个不存在依据的合同条款",
+                "task_type": "contract_review",
+                "session_id": session_id,
+                "tenant_id": "default",
+                "filters": {"doc_id": "00000000-0000-0000-0000-000000000099"},
+            },
+            headers=auth_headers,
+        )
+    assert no_results_resp.status_code == 200, no_results_resp.text
+    no_results_payload = unwrap_json(no_results_resp)
+    assert no_results_payload["references"] == []
+    assert no_results_payload["review_report"]["overall_risk"] == "uncertain"
+    assert no_results_payload["review_report"]["risk_items"][0]["severity"] == "uncertain"
+
+    with monkeypatch.context() as patch_ctx:
+        import app.services.llm_service as llm_module
+
+        patch_ctx.setattr(settings.llm, "require_external", True)
+        patch_ctx.setattr(settings.llm, "api_key", "")
+        patch_ctx.setattr(llm_module, "HAS_DASHSCOPE", False)
+        patch_ctx.setattr("app.api.v1.agents.hybrid_retriever.retrieve_with_debug", no_results_retrieve)
+        patch_ctx.setattr("app.api.v1.agents.orchestrator_agent.max_iterations", 1)
+        llm_failure_resp = await app_client.post(
+            "/api/v1/agents/execute",
+            json={
+                "query": "LLM 未配置时审查合同",
+                "task_type": "contract_review",
+                "session_id": session_id,
+                "tenant_id": "default",
+                "filters": {},
+            },
+            headers=auth_headers,
+        )
+    assert llm_failure_resp.status_code == 200, llm_failure_resp.text
+    llm_failure_payload = unwrap_json(llm_failure_resp)
+    assert llm_failure_payload["status"] == "failed"
+    assert "LLM provider is not configured" in llm_failure_payload["result"]
 
 
 def test_sub_agent_contract_schema_roundtrip() -> None:
@@ -403,7 +649,7 @@ def test_local_contract_review_samples_replay() -> None:
 
     fixture = Path(__file__).resolve().parent / "fixtures" / "contract_review_samples.jsonl"
     cases = [json.loads(line) for line in fixture.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert len(cases) >= 10
+    assert len(cases) >= 20
 
     for case in cases:
         request = AgentPlanRequest(

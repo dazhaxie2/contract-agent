@@ -11,7 +11,7 @@ from difflib import SequenceMatcher
 from typing import AsyncGenerator
 
 from loguru import logger
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 
@@ -26,6 +26,19 @@ except Exception:
 
 class LLMCallError(Exception):
     pass
+
+
+class LLMConfigurationError(LLMCallError):
+    pass
+
+
+def _external_model_available() -> bool:
+    return bool(HAS_DASHSCOPE and settings.llm.api_key)
+
+
+def _ensure_model_available() -> None:
+    if settings.llm.require_external and not _external_model_available():
+        raise LLMConfigurationError("LLM provider is not configured")
 
 
 def _seeded_random_vector(text: str, dim: int) -> list[float]:
@@ -54,7 +67,11 @@ class AliyunLLMService:
             dashscope.api_key = settings.llm.api_key
         self._semaphore = asyncio.Semaphore(settings.llm.max_concurrent_requests)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=8),
+        retry=retry_if_not_exception_type(LLMConfigurationError),
+    )
     async def generate(
         self,
         messages: list[dict],
@@ -66,6 +83,7 @@ class AliyunLLMService:
         tools: list[dict] | None = None,
     ) -> dict:
         async with self._semaphore:
+            _ensure_model_available()
             model = model or settings.llm.generation_model
             temperature = settings.llm.generation_temperature if temperature is None else temperature
             max_tokens = max_tokens or settings.llm.generation_max_tokens
@@ -73,7 +91,7 @@ class AliyunLLMService:
             started = time.perf_counter()
 
             try:
-                if HAS_DASHSCOPE and settings.llm.api_key:
+                if _external_model_available():
                     params = {
                         "model": model,
                         "messages": messages,
@@ -142,7 +160,8 @@ class AliyunLLMService:
         max_tokens = max_tokens or settings.llm.generation_max_tokens
 
         async with self._semaphore:
-            if HAS_DASHSCOPE and settings.llm.api_key:
+            _ensure_model_available()
+            if _external_model_available():
                 loop = asyncio.get_event_loop()
                 responses = await loop.run_in_executor(
                     None,
@@ -169,11 +188,16 @@ class AliyunLLMService:
                 yield word + " "
                 await asyncio.sleep(0.01)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=4))
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+        retry=retry_if_not_exception_type(LLMConfigurationError),
+    )
     async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
         model = model or settings.llm.embedding_model
         async with self._semaphore:
-            if HAS_DASHSCOPE and settings.llm.api_key:
+            _ensure_model_available()
+            if _external_model_available():
                 loop = asyncio.get_event_loop()
                 response = await loop.run_in_executor(
                     None,
@@ -198,7 +222,8 @@ class AliyunLLMService:
     ) -> list[dict]:
         model = model or settings.llm.reranker_model
         async with self._semaphore:
-            if HAS_DASHSCOPE and settings.llm.api_key:
+            _ensure_model_available()
+            if _external_model_available():
                 loop = asyncio.get_event_loop()
                 response = await loop.run_in_executor(
                     None,

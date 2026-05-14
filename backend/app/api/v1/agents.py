@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import io
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -352,6 +353,37 @@ def _regression_case_payload(execution: AgentExecution) -> dict | None:
     return payload
 
 
+def _export_filename(execution: AgentExecution, suffix: str) -> str:
+    stem = f"contract-review-{str(execution.id)[:8]}"
+    return f"{stem}.{suffix}"
+
+
+def _docx_bytes(title: str, content: str) -> bytes:
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    doc.add_heading(title, level=1)
+    for block in (content or "").splitlines():
+        doc.add_paragraph(block)
+    stream = io.BytesIO()
+    doc.save(stream)
+    return stream.getvalue()
+
+
+def _pdf_bytes(title: str, content: str) -> bytes:
+    import fitz
+
+    document = fitz.open()
+    text = f"{title}\n\n{content or ''}"
+    chunks = [text[i : i + 1800] for i in range(0, len(text), 1800)] or [title]
+    for chunk in chunks:
+        page = document.new_page(width=595, height=842)
+        page.insert_textbox(fitz.Rect(48, 48, 547, 794), chunk, fontsize=10)
+    payload = document.tobytes()
+    document.close()
+    return payload
+
+
 async def _persist_retrieval_log(
     db: AsyncSession,
     *,
@@ -384,6 +416,135 @@ async def _persist_retrieval_log(
     db.add(row)
     await db.flush()
     return row
+
+
+async def _persist_failed_execution(
+    db: AsyncSession,
+    *,
+    req: AgentExecuteRequest,
+    ctx: RequestContext,
+    execution_id: uuid.UUID,
+    trace_id: str,
+    start_time: float,
+    exc: Exception,
+    references: list[dict] | None = None,
+    retrieval_debug: dict | None = None,
+) -> AgentExecuteResponse:
+    completed_at = datetime.now(timezone.utc)
+    latency_ms = (time.perf_counter() - start_time) * 1000
+    message = f"执行失败：{exc}"
+    review_report = (
+        _build_contract_review_report(message, references or [], req.query)
+        if req.task_type == "contract_review"
+        else None
+    )
+    step_id = uuid.uuid4()
+    span_id = uuid.uuid4().hex[:16]
+    step_payload = {
+        "step_number": 1,
+        "step_id": str(step_id),
+        "span_id": span_id,
+        "parent_span_id": None,
+        "step_type": "thought",
+        "content": message[:500],
+        "action": None,
+        "tool_name": None,
+        "status": "failed",
+        "tokens_used": 0,
+        "latency_ms": round(latency_ms, 2),
+    }
+    debug = retrieval_debug or {}
+    execution = AgentExecution(
+        id=execution_id,
+        trace_id=trace_id,
+        session_id=req.session_id,
+        user_id=ctx.user_uuid,
+        tenant_id=ctx.tenant_id,
+        task_type=req.task_type,
+        user_query=req.query,
+        parsed_intent=(debug.get("preprocessed") or {}).get("intent"),
+        parsed_entities=(debug.get("preprocessed") or {}).get("entities", []),
+        agent_type=orchestrator_agent.agent_type,
+        model_config_id=req.model_config_id,
+        prompt_template_id=req.prompt_template_id,
+        total_steps=1,
+        total_tokens_used=0,
+        total_cost=0.0,
+        status="failed",
+        result=message,
+        result_metadata={
+            "references": references or [],
+            "review_report": review_report,
+            "tool_results": _tool_results_from_steps([step_payload]),
+            "usage": {
+                "total_tokens": 0,
+                "retrieval_chunks": len(references or []),
+                "retrieval_latency_ms": debug.get("latency_ms", 0.0),
+            },
+            "agent_metadata": {"error": {"type": type(exc).__name__, "message": str(exc)}},
+            "filters": req.filters,
+        },
+        error_message=message,
+        relevance_score=None,
+        factuality_score=None,
+        user_feedback=None,
+        latency_ms=latency_ms,
+        retrieval_latency_ms=float(debug.get("latency_ms", 0.0)),
+        generation_latency_ms=0.0,
+        created_at=completed_at,
+        completed_at=completed_at,
+    )
+    db.add(execution)
+    db.add(
+        AgentStep(
+            id=step_id,
+            execution_id=execution_id,
+            trace_id=trace_id,
+            span_id=span_id,
+            parent_span_id=None,
+            step_number=1,
+            step_type="thought",
+            agent_type=orchestrator_agent.agent_type,
+            thought=message,
+            action=None,
+            action_input={},
+            observation=message,
+            tool_name=None,
+            tool_input={},
+            tool_output=message,
+            retrieved_chunks=[],
+            retrieval_scores=[],
+            tokens_used=0,
+            latency_ms=latency_ms,
+            status="failed",
+            error_message=message,
+            started_at=completed_at,
+            completed_at=completed_at,
+        )
+    )
+    await session_memory_service.append_message(
+        db=db,
+        session_id=req.session_id,
+        tenant_id=ctx.tenant_id,
+        role="assistant",
+        content=message,
+        user_id=ctx.user_uuid,
+        trace_id=trace_id,
+        metadata={"execution_id": str(execution_id), "task_type": req.task_type, "status": "failed"},
+    )
+    await db.flush()
+    return AgentExecuteResponse(
+        execution_id=execution.id,
+        trace_id=execution.trace_id,
+        status=execution.status,
+        result=execution.result or "",
+        references=references or [],
+        steps=[step_payload],
+        usage=execution.result_metadata["usage"],
+        latency_ms=round(latency_ms, 2),
+        review_report=review_report,
+        tool_results=execution.result_metadata["tool_results"],
+    )
 
 
 @router.post("/plan", response_model=AgentPlanResponse)
@@ -550,11 +711,22 @@ async def execute_agent(
     trace_id = uuid.uuid4().hex[:32]
     start_time = time.perf_counter()
 
-    retrieval_results, retrieval_debug = await hybrid_retriever.retrieve_with_debug(
-        query=req.query,
-        tenant_id=ctx.tenant_id,
-        filters=req.filters,
-    )
+    try:
+        retrieval_results, retrieval_debug = await hybrid_retriever.retrieve_with_debug(
+            query=req.query,
+            tenant_id=ctx.tenant_id,
+            filters=req.filters,
+        )
+    except Exception as exc:
+        return await _persist_failed_execution(
+            db,
+            req=req,
+            ctx=ctx,
+            execution_id=execution_id,
+            trace_id=trace_id,
+            start_time=start_time,
+            exc=exc,
+        )
 
     built_context = context_builder.build(retrieval_results)
     # Create citation records and attach to references.
@@ -609,7 +781,20 @@ async def execute_agent(
     }
 
     generation_start = time.perf_counter()
-    result = await orchestrator_agent.execute(req.query, context=agent_context)
+    try:
+        result = await orchestrator_agent.execute(req.query, context=agent_context)
+    except Exception as exc:
+        return await _persist_failed_execution(
+            db,
+            req=req,
+            ctx=ctx,
+            execution_id=execution_id,
+            trace_id=trace_id,
+            start_time=start_time,
+            exc=exc,
+            references=built_context["references"],
+            retrieval_debug=retrieval_debug,
+        )
     generation_latency_ms = (time.perf_counter() - generation_start) * 1000
 
     relevance_score = None
@@ -705,6 +890,7 @@ async def execute_agent(
     for idx, step in enumerate(result.steps):
         step_started = datetime.fromtimestamp(step.timestamp, tz=timezone.utc)
         step_completed = step_started + timedelta(milliseconds=float(step.latency_ms or 0.0))
+        step_status = "completed" if result.success or idx < len(result.steps) - 1 else "failed"
         try:
             step_id = uuid.UUID(step.id)
         except ValueError:
@@ -732,8 +918,8 @@ async def execute_agent(
                 retrieval_scores=[],
                 tokens_used=step.tokens_used or 0,
                 latency_ms=float(step.latency_ms or 0.0),
-                status="completed",
-                error_message=None,
+                status=step_status,
+                error_message=None if step_status == "completed" else result.output,
                 started_at=step_started,
                 completed_at=step_completed,
             )
@@ -748,7 +934,7 @@ async def execute_agent(
                 "content": (step.content or "")[:500],
                 "action": step.action,
                 "tool_name": step.tool_name,
-                "status": "completed",
+                "status": step_status,
                 "tokens_used": step.tokens_used,
                 "latency_ms": round(float(step.latency_ms or 0.0), 2),
             }
@@ -988,6 +1174,45 @@ async def get_execution_detail(
         )
     ).all()
     return _execution_payload(execution, steps=[_step_payload(step) for step in step_rows])
+
+
+@router.get("/executions/{execution_id}/export")
+async def export_execution_report(
+    execution_id: str,
+    format: str = Query(default="markdown", pattern="^(markdown|docx|pdf)$"),
+    db: AsyncSession = Depends(get_read_db),
+    ctx: RequestContext = Depends(get_request_context),
+):
+    execution_uuid = _parse_uuid(execution_id, "execution_id")
+    execution = await db.scalar(
+        select(AgentExecution).where(
+            AgentExecution.id == execution_uuid,
+            AgentExecution.tenant_id == ctx.tenant_id,
+        )
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="execution not found")
+
+    title = "合同审查报告"
+    content = execution.result or ""
+    if format == "docx":
+        payload = _docx_bytes(title, content)
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = _export_filename(execution, "docx")
+    elif format == "pdf":
+        payload = _pdf_bytes(title, content)
+        media_type = "application/pdf"
+        filename = _export_filename(execution, "pdf")
+    else:
+        payload = content.encode("utf-8")
+        media_type = "text/markdown; charset=utf-8"
+        filename = _export_filename(execution, "md")
+
+    return StreamingResponse(
+        io.BytesIO(payload),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/trace/{trace_id}")

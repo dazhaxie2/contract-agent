@@ -19,6 +19,12 @@
 - 2026-05-14：反馈接口生成 `regression_case_id` 和可回放 regression case。
 - 2026-05-14：后端回归 `pytest tests\test_a_phase_closure.py` 通过，前端 `npm run build` 通过，真实 HTTP smoke 通过。
 - 2026-05-14：新增 sub-agent 统一输入输出契约，Orchestrator 路由时写入 `agent_contract` 并返回标准化 sub-agent output。
+- 2026-05-14：新增真实工作台指标、regression case 列表/详情、20 条脱敏样例和本地回放命令。
+- 2026-05-14：新增稳定原子工具清单、workspace 扩展预留 schema、Prompt 测试 trace 展示和文档库快捷审查/版本对比入口。
+- 2026-05-14：扩充 20 条脱敏合同审查样例，新增审查报告 DOCX/PDF 导出和批量审查入口。
+- 2026-05-14：模型 A/B 页面接入真实 API，Prompt 版本历史展示质量评分和 evaluation_results。
+- 2026-05-14：新增 `/auth/me` 权限自检，补充 viewer 写操作 403 的 RBAC 回归测试。
+- 2026-05-14：补齐合同工作台 API 端到端验收和失败场景自动化，覆盖空文件、入库失败、无依据、LLM 未配置和 401。
 
 ## P0：可演示合同审查闭环
 
@@ -56,18 +62,18 @@
 - [x] 无 citation 的风险项在前端标记为“不确定/依据不足”。
 - [x] 每次计划生成、用户确认、执行结果绑定 `decision_id`。
 - [x] 后端测试覆盖 plan、未确认拒绝执行、确认执行、metadata、反馈回归样例。
-- [ ] Dashboard 增加计划成功率、工具失败率、引用覆盖率、低置信度占比、用户反馈均分。
-- [ ] 增加 regression case 列表与回放命令，支持批量跑本地样例。
-- [ ] Prompt 测试页去掉模拟输出，统一真实调用 `promptApi.test` 并展示 trace。
-- [ ] 工具调用链路补充更细粒度 span，便于定位具体失败工具。
+- [x] Dashboard 增加计划成功率、工具失败率、引用覆盖率、低置信度占比、用户反馈均分。
+- [x] 增加 regression case 列表与回放命令，支持批量跑本地样例。
+- [x] Prompt 测试页去掉模拟输出，统一真实调用 `promptApi.test` 并展示 trace。
+- [x] 工具调用链路补充更细粒度 span，便于定位具体失败工具。
 
 ## P1：文档库
 
 - [x] 新增 `/documents` 页面，展示文档列表、状态、类型、chunk 数、上传时间、失败原因。
 - [x] 文档详情展示入库事件、chunk 预览、元数据、生效状态。
 - [x] 支持删除文档并刷新列表。
-- [ ] 文档详情增加版本对比入口。
-- [ ] 文档列表增加“作为当前合同发起审查”的快捷动作。
+- [x] 文档详情增加版本对比入口。
+- [x] 文档列表增加“作为当前合同发起审查”的快捷动作。
 
 ## P1：DDD 与 Smart Agent, Dumb Tools 收敛
 
@@ -75,19 +81,19 @@
 - [x] Orchestrator 负责计划拆解和确认执行入口。
 - [x] 工具轨迹以 `tool_results` 形式沉淀到执行记录。
 - [x] 为 `retrieval`、`compliance`、`comparison`、`drafting`、`validation` sub-agent 明确定义统一输入输出契约。
-- [ ] 将合同域、审查域、知识域的原子工具整理成稳定工具清单。
-- [ ] 对跨域推理和校验逻辑增加专门 orchestrator 层测试。
-- [ ] 预留“合同事项/履约事件/费用证据”接口，但不进入 MVP 主流程。
+- [x] 将合同域、审查域、知识域的原子工具整理成稳定工具清单。
+- [x] 对跨域推理和校验逻辑增加专门 orchestrator 层测试。
+- [x] 预留“合同事项/履约事件/费用证据”接口，但不进入 MVP 主流程。
 
 ## P2：质量、样例与运营
 
-- [ ] 建立 20-50 条脱敏合同审查样例，覆盖付款、违约、解除、保密、责任限制、争议解决。
-- [ ] 至少 10 条样例纳入自动回放，稳定验证 plan/execute/report。
-- [ ] 指标页从估算指标升级为真实指标：引用命中率、人工反馈均分、失败率、平均审查耗时。
-- [ ] 增加导出 DOCX/PDF。
-- [ ] 增加批量审查。
-- [ ] 增加模型 A/B 与 prompt 版本效果对比。
-- [ ] 收敛真实用户体系和 RBAC。
+- [x] 建立 20-50 条脱敏合同审查样例，覆盖付款、违约、解除、保密、责任限制、争议解决。
+- [x] 至少 10 条样例纳入自动回放，稳定验证 plan/execute/report。
+- [x] 指标页从估算指标升级为真实指标：引用命中率、人工反馈均分、失败率、平均审查耗时。
+- [x] 增加导出 DOCX/PDF。
+- [x] 增加批量审查。
+- [x] 增加模型 A/B 与 prompt 版本效果对比。
+- [x] 收敛真实用户体系和 RBAC。
 
 ## API 与类型清单
 
@@ -107,6 +113,11 @@
 - [x] 前端类型：`DocumentItem`、`IngestionJob`、`AgentExecution`、`ReviewReport`、`RiskItem`、`CitationDetail`。
 - [x] 前端类型：`AgentPlan`、`PlanStep`、`DecisionRecord`、`ToolResult`。
 - [x] 后端类型：`SubAgentTaskInput`、`SubAgentTaskOutput`、`SubAgentFinding`、`SubAgentReference`、`SubAgentToolResult`。
+- [x] 后端 API：`GET /api/v1/agents/regression-cases` 与 `GET /api/v1/agents/regression-cases/{id}`。
+- [x] 后端 API：`GET /api/v1/agents/tool-catalog` 与 `GET /api/v1/agents/workspace-extension-schema`。
+- [x] 后端 API：`GET /api/v1/agents/executions/{execution_id}/export?format=markdown|docx|pdf`。
+- [x] 后端 API：`GET /api/v1/auth/me` 返回当前用户、租户、角色和权限。
+- [x] 后端命令：`python scripts\replay_regression_cases.py`。
 
 ## 测试计划
 
@@ -119,14 +130,17 @@
 - [x] 后端：确认后能按计划执行合同审查，并保留 trace、tool result、review report。
 - [x] 后端：用户反馈能生成可回放 regression case。
 - [x] 后端：sub-agent 统一契约可完成 input/output roundtrip，并保留引用、工具结果和 findings。
+- [x] 后端：regression case 列表/详情可查询，真实工作台指标可从 `/system/metrics/overview` 返回。
+- [x] 后端：20 条脱敏合同审查样例可通过本地命令回放。
+- [x] 后端：审查报告可导出 Markdown、DOCX、PDF。
+- [x] 后端：RBAC 可阻止 viewer 执行模型写操作。
+- [x] 后端：orchestrator 路由工具返回标准 sub-agent output。
 - [x] 前端：`npm run build` 通过，无 TypeScript 错误。
 - [x] HTTP smoke：登录 -> 创建 session -> 生成 plan。
-- [ ] 端到端验收：登录 -> 上传合同 -> 等待入库 -> 生成计划 -> 确认执行 -> 查看风险项 -> 展开引用 -> 提交反馈。
-- [ ] 失败场景：空文件、入库失败、无检索结果、LLM 未配置、401 过期跳登录。
+- [x] API 端到端验收：登录 -> 上传合同 -> 等待入库 -> 生成计划 -> 确认执行 -> 查看风险项 -> 展开引用 -> 提交反馈。
+- [x] 失败场景：空文件、入库失败、无检索结果、LLM 未配置、401 过期跳登录。
 
 ## 下一步优先级
 
-1. 完成真实端到端验收，把浏览器操作路径和截图/录屏结果补到文档。
-2. 把 `retrieval/compliance/comparison/drafting/validation` sub-agent 输入输出契约写成代码级 schema。
-3. 增加 regression case 本地回放命令，先接入 10 条脱敏样例。
-4. Dashboard 接入真实指标，不再展示估算值。
+1. 当前计划内开发项已完成并勾选，后续进入演示打磨和真实用户试用。
+2. 可继续补充真实浏览器录屏、50 条样例回放、企业制度知识库和 DOCX/PDF 版式优化。

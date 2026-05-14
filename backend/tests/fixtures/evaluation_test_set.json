@@ -1,0 +1,122 @@
+[
+  {
+    "id": "TC-001",
+    "category": "contract_review",
+    "query": "审查这份采购合同中的付款条款是否符合法律规定",
+    "expected_intent": "compliance_check",
+    "expected_agent": "compliance",
+    "expected_tools": ["search_knowledge_base", "compliance_check"],
+    "expected_references": true,
+    "ground_truth": "应识别付款条款中的违约金比例、付款期限、付款方式是否符合《民法典》相关规定",
+    "difficulty": "medium",
+    "tags": ["payment", "contract_review"]
+  },
+  {
+    "id": "TC-002",
+    "category": "contract_review",
+    "query": "帮我审查这份劳动合同的解除条款",
+    "expected_intent": "compliance_check",
+    "expected_agent": "compliance",
+    "expected_tools": ["search_knowledge_base", "compliance_check"],
+    "expected_references": true,
+    "ground_truth": "应检查解除条件是否符合《劳动合同法》第39-41条，经济补偿金是否合规",
+    "difficulty": "medium",
+    "tags": ["labor", "termination", "contract_review"]
+  },
+  {
+    "id": "TC-003",
+    "category": "legal_search",
+    "query": "民法典关于违约金的最新规定是什么",
+    "expected_intent": "legal_search",
+    "expected_agent": "legal_search",
+    "expected_tools": ["search_law_provisions"],
+    "expected_references": true,
+    "ground_truth": "应引用《民法典》第585条关于违约金的约定和调整规定",
+    "difficulty": "easy",
+    "tags": ["civil_code", "penalty"]
+  },
+  {
+    "id": "TC-004",
+    "category": "comparison",
+    "query": "对比这两份合同版本的差异，重点关注违约责任条款",
+    "expected_intent": "contract_comparison",
+    "expected_agent": "comparison",
+    "expected_tools": ["compare_clauses"],
+    "expected_references": false,
+    "ground_truth": "应列出新增/删除/修改的违约责任条款，评估每处变更的风险影响",
+    "difficulty": "hard",
+    "tags": ["comparison", "liability"]
+  },
+  {
+    "id": "TC-005",
+    "category": "drafting",
+    "query": "帮我起草一份保密协议的违约条款",
+    "expected_intent": "clause_drafting",
+    "expected_agent": "drafting",
+    "expected_tools": ["draft_clause"],
+    "expected_references": true,
+    "ground_truth": "应生成包含违约定义、违约金计算、救济措施、法律依据的完整条款",
+    "difficulty": "hard",
+    "tags": ["drafting", "confidentiality", "nda"]
+  },
+  {
+    "id": "TC-006",
+    "category": "calculation",
+    "query": "计算逾期付款30天的违约金，合同金额100万，约定日千分之一",
+    "expected_intent": "legal_calculation",
+    "expected_agent": "legal_search",
+    "expected_tools": ["legal_calculation"],
+    "expected_references": false,
+    "ground_truth": "1000000 × 0.001 × 30 = 30000元，应注明计算依据和是否超过法定上限",
+    "difficulty": "easy",
+    "tags": ["calculation", "penalty"]
+  },
+  {
+    "id": "TC-007",
+    "category": "compliance",
+    "query": "这份租赁合同的格式条款是否存在霸王条款",
+    "expected_intent": "compliance_check",
+    "expected_agent": "compliance",
+    "expected_tools": ["search_knowledge_base", "compliance_check", "score_risk"],
+    "expected_references": true,
+    "ground_truth": "应识别是否违反《民法典》第496-498条关于格式条款的规定，特别是免责条款是否显著标识",
+    "difficulty": "hard",
+    "tags": ["standard_clause", "lease", "consumer_protection"]
+  },
+  {
+    "id": "TC-008",
+    "category": "multi_step",
+    "query": "审查这份采购合同，然后帮我起草修改建议",
+    "expected_intent": "multi_step",
+    "expected_agent": "orchestrator",
+    "expected_tools": ["route_to_agent"],
+    "expected_references": true,
+    "ground_truth": "应先调用compliance agent审查风险，再调用drafting agent生成修改建议，综合两个结果输出",
+    "difficulty": "hard",
+    "tags": ["multi_step", "orchestrator"]
+  },
+  {
+    "id": "TC-009",
+    "category": "retrieval",
+    "query": "搜索关于建设工程施工合同的所有相关法律规定",
+    "expected_intent": "legal_search",
+    "expected_agent": "retrieval",
+    "expected_tools": ["search_knowledge_base"],
+    "expected_references": true,
+    "ground_truth": "应返回《民法典》建设工程合同章节、《建设工程质量管理条例》等相关法条",
+    "difficulty": "easy",
+    "tags": ["retrieval", "construction"]
+  },
+  {
+    "id": "TC-010",
+    "category": "validation",
+    "query": "验证以下法律结论是否有依据：违约金超过实际损失30%则无效",
+    "expected_intent": "factuality_check",
+    "expected_agent": "validation",
+    "expected_tools": ["factuality_check", "compliance_validation"],
+    "expected_references": true,
+    "ground_truth": "应指出该说法不准确——《民法典》585条规定违约金过高可请求调整，但并非自动无效",
+    "difficulty": "medium",
+    "tags": ["validation", "factuality", "penalty"]
+  }
+]

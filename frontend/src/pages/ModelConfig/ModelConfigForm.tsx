@@ -1,36 +1,73 @@
-import React from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Form, Input, Select, Slider, InputNumber, Switch, Button, Card, Row, Col, Typography, Divider, Space, message } from 'antd';
+import React, { useEffect, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { Form, Input, Select, Slider, InputNumber, Switch, Button, Card, Row, Col, Typography, Space, message } from 'antd';
 import { SaveOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+
+import { modelApi, ModelConfig } from '../../services/api';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
 
+type ModelFormValues = Partial<ModelConfig> & {
+  api_key?: string;
+};
+
 const ModelConfigForm: React.FC = () => {
   const navigate = useNavigate();
+  const { id } = useParams();
   const [form] = Form.useForm();
+  const [loading, setLoading] = useState(false);
 
-  const onFinish = (values: any) => {
-    console.log('提交:', values);
-    message.success('模型配置已保存');
-    navigate('/models');
+  useEffect(() => {
+    if (!id) return;
+    setLoading(true);
+    modelApi
+      .get(id)
+      .then((model) => form.setFieldsValue(model))
+      .catch(() => message.error('模型配置加载失败'))
+      .finally(() => setLoading(false));
+  }, [form, id]);
+
+  const onFinish = async (values: ModelFormValues) => {
+    setLoading(true);
+    try {
+      if (id) {
+        await modelApi.update(id, values);
+      } else {
+        await modelApi.create({
+          ...values,
+          frequency_penalty: values.frequency_penalty ?? 0,
+          presence_penalty: values.presence_penalty ?? 0,
+          stop_sequences: values.stop_sequences ?? [],
+          extra_headers: values.extra_headers ?? {},
+          extra_config: values.extra_config ?? {},
+        });
+      }
+      message.success('模型配置已保存');
+      navigate('/models');
+    } catch {
+      message.error('模型配置保存失败');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <div>
       <Space className="mb-4">
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/models')}>返回</Button>
-        <Title level={4} style={{ margin: 0 }}>新建模型配置</Title>
+        <Title level={4} style={{ margin: 0 }}>{id ? '编辑模型配置' : '新建模型配置'}</Title>
       </Space>
 
       <Form form={form} layout="vertical" onFinish={onFinish}
+        disabled={loading}
         initialValues={{ provider: 'aliyun', model_type: 'generation', temperature: 0.1, top_p: 0.8, max_tokens: 8192, context_window: 32768, timeout_seconds: 120, max_retries: 3, max_concurrent_requests: 50, requests_per_minute: 600, supports_streaming: true, supports_function_calling: false }}
       >
         <Row gutter={24}>
           <Col span={12}>
             <Card title="基础信息" size="small" className="mb-4">
               <Form.Item label="配置名称" name="name" rules={[{ required: true, message: '请输入名称' }]}>
-                <Input placeholder="如: qwen-max-legal" />
+                <Input disabled={Boolean(id)} placeholder="如: qwen-max-legal" />
               </Form.Item>
               <Form.Item label="显示名称" name="display_name" rules={[{ required: true }]}>
                 <Input placeholder="如: 通义千问Max(法律版)" />
@@ -41,7 +78,7 @@ const ModelConfigForm: React.FC = () => {
               <Row gutter={16}>
                 <Col span={12}>
                   <Form.Item label="模型类型" name="model_type" rules={[{ required: true }]}>
-                    <Select options={[
+                    <Select disabled={Boolean(id)} options={[
                       { value: 'generation', label: '核心生成模型' },
                       { value: 'light', label: '轻量预处理模型' },
                       { value: 'embedding', label: '嵌入模型' },
@@ -51,7 +88,7 @@ const ModelConfigForm: React.FC = () => {
                 </Col>
                 <Col span={12}>
                   <Form.Item label="提供商" name="provider" rules={[{ required: true }]}>
-                    <Select options={[
+                    <Select disabled={Boolean(id)} options={[
                       { value: 'aliyun', label: '阿里云通义千问' },
                       { value: 'openai', label: 'OpenAI' },
                       { value: 'local', label: '本地部署' },
@@ -61,7 +98,7 @@ const ModelConfigForm: React.FC = () => {
                 </Col>
               </Row>
               <Form.Item label="模型ID" name="model_id" rules={[{ required: true }]}>
-                <Input placeholder="如: qwen-max / gpt-4o" />
+                <Input disabled={Boolean(id)} placeholder="如: qwen-max / gpt-4o" />
               </Form.Item>
             </Card>
 
@@ -141,7 +178,7 @@ const ModelConfigForm: React.FC = () => {
         <div className="mt-4 text-right">
           <Space>
             <Button onClick={() => navigate('/models')}>取消</Button>
-            <Button type="primary" htmlType="submit" icon={<SaveOutlined />}>保存配置</Button>
+            <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={loading}>保存配置</Button>
           </Space>
         </div>
       </Form>

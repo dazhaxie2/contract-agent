@@ -1,0 +1,65 @@
+# Milvus standalone（依赖 etcd + minio）
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: milvus-data
+  namespace: contract-agent
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 8Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: milvus
+  namespace: contract-agent
+  labels: { app: milvus }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: milvus } }
+  template:
+    metadata:
+      labels: { app: milvus }
+    spec:
+      containers:
+        - name: milvus
+          image: milvusdb/milvus:v2.5.4
+          imagePullPolicy: IfNotPresent
+          command: ["milvus", "run", "standalone"]
+          env:
+            - { name: ETCD_ENDPOINTS, value: "etcd:2379" }
+            - { name: MINIO_ADDRESS, value: "minio:9000" }
+            - { name: MINIO_ACCESSKEYID, value: minioadmin }
+            - { name: MINIO_SECRETACCESSKEY, value: minioadmin123 }
+          ports:
+            - { containerPort: 19530, name: grpc }
+            - { containerPort: 9091, name: metrics }
+          readinessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            periodSeconds: 10
+            initialDelaySeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 12
+          resources:
+            requests: { cpu: 200m, memory: 768Mi }
+            limits: { cpu: "2", memory: 1.5Gi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/milvus }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: milvus-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: milvus
+  namespace: contract-agent
+spec:
+  ports:
+    - { port: 19530, targetPort: grpc, name: grpc }
+    - { port: 9091, targetPort: metrics, name: metrics }
+  selector: { app: milvus }

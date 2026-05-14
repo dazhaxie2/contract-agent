@@ -1,0 +1,245 @@
+# 底层数据服务：hidb (postgres) + redis + minio + etcd
+---
+# ============== HiDB (PostgreSQL 16) ==============
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hidb-data
+  namespace: contract-agent
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hidb
+  namespace: contract-agent
+  labels: { app: hidb }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: hidb } }
+  template:
+    metadata:
+      labels: { app: hidb }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: POSTGRES_DB, value: contract_agent }
+            - { name: POSTGRES_USER, value: hidb }
+            - { name: POSTGRES_PASSWORD, value: hidb123 }
+            - { name: POSTGRES_INITDB_ARGS, value: "--encoding=UTF8 --locale=C" }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports:
+            - { containerPort: 5432, name: pg }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "hidb", "-d", "contract_agent"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: hidb-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hidb
+  namespace: contract-agent
+spec:
+  ports:
+    - { port: 5432, targetPort: pg, name: pg }
+  selector: { app: hidb }
+---
+# ============== Redis ==============
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: contract-agent
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: contract-agent
+  labels: { app: redis }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: redis } }
+  template:
+    metadata:
+      labels: { app: redis }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          imagePullPolicy: IfNotPresent
+          args:
+            - redis-server
+            - --appendonly
+            - "yes"
+            - --maxmemory
+            - 256mb
+            - --maxmemory-policy
+            - allkeys-lru
+          ports:
+            - { containerPort: 6379, name: redis }
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { cpu: 300m, memory: 256Mi }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: redis-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: contract-agent
+spec:
+  ports:
+    - { port: 6379, targetPort: redis, name: redis }
+  selector: { app: redis }
+---
+# ============== MinIO ==============
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: contract-agent
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: contract-agent
+  labels: { app: minio }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: minio } }
+  template:
+    metadata:
+      labels: { app: minio }
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:latest
+          imagePullPolicy: IfNotPresent
+          args: ["server", "/data", "--console-address", ":9001"]
+          env:
+            - { name: MINIO_ROOT_USER, value: minioadmin }
+            - { name: MINIO_ROOT_PASSWORD, value: minioadmin123 }
+          ports:
+            - { containerPort: 9000, name: api }
+            - { containerPort: 9001, name: console }
+          readinessProbe:
+            httpGet: { path: /minio/health/live, port: api }
+            periodSeconds: 10
+            initialDelaySeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 384Mi }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: minio-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: contract-agent
+spec:
+  ports:
+    - { port: 9000, targetPort: api, name: api }
+    - { port: 9001, targetPort: console, name: console }
+  selector: { app: minio }
+---
+# ============== etcd（Milvus 依赖） ==============
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: etcd-data
+  namespace: contract-agent
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: etcd
+  namespace: contract-agent
+  labels: { app: etcd }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: etcd } }
+  template:
+    metadata:
+      labels: { app: etcd }
+    spec:
+      containers:
+        - name: etcd
+          image: quay.io/coreos/etcd:v3.5.11
+          imagePullPolicy: IfNotPresent
+          command:
+            - etcd
+            - --advertise-client-urls=http://127.0.0.1:2379
+            - --listen-client-urls=http://0.0.0.0:2379
+            - --data-dir=/etcd
+          env:
+            - { name: ETCD_AUTO_COMPACTION_MODE, value: revision }
+            - { name: ETCD_AUTO_COMPACTION_RETENTION, value: "1000" }
+            - { name: ETCD_QUOTA_BACKEND_BYTES, value: "4294967296" }
+            - { name: ETCD_SNAPSHOT_COUNT, value: "50000" }
+          ports:
+            - { containerPort: 2379, name: client }
+          resources:
+            requests: { cpu: 30m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          volumeMounts:
+            - { name: data, mountPath: /etcd }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: etcd-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: etcd
+  namespace: contract-agent
+spec:
+  ports:
+    - { port: 2379, targetPort: client, name: client }
+  selector: { app: etcd }

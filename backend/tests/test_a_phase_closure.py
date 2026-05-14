@@ -66,6 +66,25 @@ async def test_models_crud_and_compat(app_client: AsyncClient, auth_headers: dic
         "extra_headers": {},
         "extra_config": {},
     }
+    stale_token_resp = await app_client.post("/api/v1/models", json=payload, headers=viewer_headers)
+    assert stale_token_resp.status_code == 401
+
+    register_viewer_resp = await app_client.post(
+        "/api/v1/auth/register",
+        json={
+            "username": "viewer",
+            "email": "viewer@example.com",
+            "password": "password123",
+            "tenant_id": "default",
+        },
+    )
+    assert register_viewer_resp.status_code == 200, register_viewer_resp.text
+    viewer_login_resp = await app_client.post(
+        "/api/v1/auth/login",
+        json={"username": "viewer", "password": "password123"},
+    )
+    assert viewer_login_resp.status_code == 200, viewer_login_resp.text
+    viewer_headers = {"Authorization": f"Bearer {unwrap_json(viewer_login_resp)['access_token']}"}
     viewer_create_resp = await app_client.post("/api/v1/models", json=payload, headers=viewer_headers)
     assert viewer_create_resp.status_code == 403
 
@@ -368,6 +387,18 @@ async def test_agent_plan_confirm_execute_and_feedback_regression(
 @pytest.mark.asyncio
 async def test_contract_workbench_api_e2e_acceptance(app_client: AsyncClient, monkeypatch) -> None:
     monkeypatch.setattr(settings.rag, "enable_crag", False)
+
+    register_resp = await app_client.post(
+        "/api/v1/auth/register",
+        json={
+            "username": "admin",
+            "email": "admin@example.com",
+            "password": "password123",
+            "full_name": "Admin",
+            "tenant_id": "default",
+        },
+    )
+    assert register_resp.status_code == 200, register_resp.text
 
     login_resp = await app_client.post(
         "/api/v1/auth/login",

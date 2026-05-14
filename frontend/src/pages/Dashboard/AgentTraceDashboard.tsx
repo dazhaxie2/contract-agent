@@ -26,7 +26,7 @@ const AgentTraceDashboard: React.FC = () => {
 
   const loadTrace = async () => {
     if (!traceId.trim()) {
-      setError('Please input trace id');
+      setError('请输入链路 ID');
       return;
     }
     setLoading(true);
@@ -36,7 +36,7 @@ const AgentTraceDashboard: React.FC = () => {
       setTrace(data);
     } catch {
       setTrace(null);
-      setError('Trace not found or failed to load');
+      setError('未找到链路，或加载失败');
     } finally {
       setLoading(false);
     }
@@ -46,19 +46,19 @@ const AgentTraceDashboard: React.FC = () => {
     <div>
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
         <Title level={4} style={{ margin: 0 }}>
-          Agent Trace Dashboard
+          Agent 链路追踪
         </Title>
 
         <Card>
           <Space.Compact style={{ width: '100%' }}>
             <Input
-              placeholder="Input trace id"
+              placeholder="请输入链路 ID"
               value={traceId}
               onChange={(e) => setTraceId(e.target.value)}
               onPressEnter={loadTrace}
             />
             <Button type="primary" loading={loading} onClick={loadTrace}>
-              Search
+              查询
             </Button>
           </Space.Compact>
         </Card>
@@ -67,31 +67,31 @@ const AgentTraceDashboard: React.FC = () => {
 
         {!trace ? (
           <Card>
-            <Empty description="No trace loaded" />
+            <Empty description="暂无链路数据" />
           </Card>
         ) : (
           <>
             <Row gutter={[16, 16]}>
               <Col xs={24} md={8}>
                 <Card>
-                  <Statistic title="Total Duration (ms)" value={trace.total_duration_ms} precision={2} />
+                  <Statistic title="总耗时 (ms)" value={trace.total_duration_ms} precision={2} />
                 </Card>
               </Col>
               <Col xs={24} md={8}>
                 <Card>
-                  <Statistic title="Total Tokens" value={trace.total_tokens} />
+                  <Statistic title="总 Token 数" value={trace.total_tokens} />
                 </Card>
               </Col>
               <Col xs={24} md={8}>
                 <Card>
-                  <Statistic title="Steps" value={trace.steps.length} />
+                  <Statistic title="步骤数" value={trace.steps.length} />
                 </Card>
               </Col>
             </Row>
 
             <Row gutter={[16, 16]}>
               <Col xs={24} lg={14}>
-                <Card title="Execution Timeline">
+                <Card title="执行时间线">
                   <Timeline
                     items={trace.steps.map((step) => ({
                       color: step.type === 'action' ? 'orange' : step.type === 'thought' ? 'blue' : 'green',
@@ -99,8 +99,8 @@ const AgentTraceDashboard: React.FC = () => {
                         <div>
                           <Space size={8}>
                             <Tag>{step.type}</Tag>
-                            <Text type="secondary">{step.duration_ms}ms</Text>
-                            <Text type="secondary">{step.tokens} tokens</Text>
+                            <Text type="secondary">{step.duration_ms} ms</Text>
+                            <Text type="secondary">{step.tokens} Token</Text>
                           </Space>
                           <Paragraph style={{ marginTop: 8, marginBottom: 0 }}>{step.content}</Paragraph>
                         </div>
@@ -110,15 +110,15 @@ const AgentTraceDashboard: React.FC = () => {
                 </Card>
               </Col>
               <Col xs={24} lg={10}>
-                <Card title="Trace Summary">
+                <Card title="链路摘要">
                   <Space direction="vertical" style={{ width: '100%' }}>
                     <Text>
-                      Trace ID: <Text code>{trace.trace_id}</Text>
+                      链路 ID：<Text code>{trace.trace_id}</Text>
                     </Text>
                     <Text>
-                      Status: <Tag>{trace.status}</Tag>
+                      状态：<Tag>{trace.status}</Tag>
                     </Text>
-                    <Text type="secondary">Created: {trace.created_at || '-'}</Text>
+                    <Text type="secondary">创建时间：{trace.created_at || '-'}</Text>
                   </Space>
                 </Card>
               </Col>

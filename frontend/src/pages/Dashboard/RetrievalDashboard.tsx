@@ -18,7 +18,7 @@ const RetrievalDashboard: React.FC = () => {
       const data = await dashboardApi.getRetrievalMetrics();
       setMetrics(data);
     } catch {
-      setError('Failed to load retrieval metrics');
+      setError('检索指标加载失败');
     } finally {
       setLoading(false);
     }
@@ -47,10 +47,10 @@ const RetrievalDashboard: React.FC = () => {
   const after = metrics?.rerank_comparison?.after ?? 0;
 
   const chartData = [
-    { metric: 'Recall@10', value: recall * 100 },
-    { metric: 'Precision@10', value: precision * 100 },
-    { metric: 'MRR Before', value: before * 100 },
-    { metric: 'MRR After', value: after * 100 },
+    { metric: '召回率 Recall@10', value: recall * 100 },
+    { metric: '准确率 Precision@10', value: precision * 100 },
+    { metric: '重排前 MRR', value: before * 100 },
+    { metric: '重排后 MRR', value: after * 100 },
   ];
 
   return (
@@ -58,9 +58,9 @@ const RetrievalDashboard: React.FC = () => {
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
         <Space style={{ width: '100%', justifyContent: 'space-between' }}>
           <Title level={4} style={{ margin: 0 }}>
-            Retrieval Dashboard
+            检索质量
           </Title>
-          <Text type="secondary">{loading ? 'Refreshing...' : 'Auto refresh: 20s'}</Text>
+          <Text type="secondary">{loading ? '刷新中…' : '自动刷新：20 秒'}</Text>
         </Space>
 
         {error ? <Alert type="error" message={error} showIcon /> : null}
@@ -68,43 +68,43 @@ const RetrievalDashboard: React.FC = () => {
         <Row gutter={[16, 16]}>
           <Col xs={24} md={6}>
             <Card>
-              <Statistic title="Recall@10" value={recall * 100} precision={2} suffix="%" />
+              <Statistic title="召回率 Recall@10" value={recall * 100} precision={2} suffix="%" />
             </Card>
           </Col>
           <Col xs={24} md={6}>
             <Card>
-              <Statistic title="Precision@10" value={precision * 100} precision={2} suffix="%" />
+              <Statistic title="准确率 Precision@10" value={precision * 100} precision={2} suffix="%" />
             </Card>
           </Col>
           <Col xs={24} md={6}>
             <Card>
-              <Statistic title="MRR Before" value={before} precision={4} />
+              <Statistic title="重排前 MRR" value={before} precision={4} />
             </Card>
           </Col>
           <Col xs={24} md={6}>
             <Card>
-              <Statistic title="MRR After" value={after} precision={4} />
+              <Statistic title="重排后 MRR" value={after} precision={4} />
             </Card>
           </Col>
         </Row>
 
         <Row gutter={[16, 16]}>
           <Col xs={24} lg={12}>
-            <Card title="Quality Metrics Comparison" loading={loading && !metrics}>
+            <Card title="质量指标对比" loading={loading && !metrics}>
               <Column data={chartData} xField="metric" yField="value" height={260} />
             </Card>
           </Col>
           <Col xs={24} lg={12}>
-            <Card title="Channel Contribution" loading={loading && !metrics}>
+            <Card title="通道贡献度" loading={loading && !metrics}>
               <Table
                 rowKey="channel"
                 size="small"
                 pagination={false}
                 dataSource={channelRows}
                 columns={[
-                  { title: 'Channel', dataIndex: 'channel' },
-                  { title: 'K', dataIndex: 'k_values' },
-                  { title: 'Hit Rate', dataIndex: 'top_k_hit_rate' },
+                  { title: '通道', dataIndex: 'channel' },
+                  { title: 'K 值', dataIndex: 'k_values' },
+                  { title: '命中率', dataIndex: 'top_k_hit_rate' },
                 ]}
               />
             </Card>

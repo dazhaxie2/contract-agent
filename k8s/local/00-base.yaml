@@ -1,0 +1,109 @@
+# Namespace + ServiceAccount + ConfigMap + Secret + frontend nginx config
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: contract-agent
+  labels:
+    app.kubernetes.io/name: contract-agent
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: contract-agent
+  namespace: contract-agent
+---
+# 应用层配置（指向 K8s 内部 Service）
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: contract-agent-config
+  namespace: contract-agent
+data:
+  ENV: "development"
+  LOG_LEVEL: "INFO"
+
+  DB_PROVIDER: "hidb_pg"
+  DB_DSN_WRITE: "postgresql+asyncpg://hidb:hidb123@hidb:5432/contract_agent"
+  DB_DSN_READ: "postgresql+asyncpg://hidb:hidb123@hidb:5432/contract_agent"
+  DB_READ_TARGET: "hidb"
+  DB_CUTOVER_PERCENT: "100"
+  DB_DUAL_WRITE_ENABLED: "false"
+
+  REDIS_URL: "redis://redis:6379/0"
+
+  MILVUS_HOST: "milvus"
+  MILVUS_PORT: "19530"
+
+  MINIO_ENDPOINT: "minio:9000"
+  MINIO_ACCESS_KEY: "minioadmin"
+  MINIO_SECRET_KEY: "minioadmin123"
+
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  INGESTION_USE_KAFKA: "true"
+  INGESTION_CONSUMER_ENABLED: "true"
+  INGESTION_MAX_RETRIES: "3"
+  INGESTION_STRICT_CONNECTOR: "false"
+
+  LEGAL_SOURCE_ENABLED: "true"
+  LEGAL_SOURCE_SEED_URLS: "https://www.gov.cn/zhengce/zhengceku/"
+  LEGAL_SOURCE_TENANT_ALLOWLIST: "default"
+  LEGAL_SOURCE_SYNC_INTERVAL_MINUTES: "360"
+
+  NEBULA_HOST: "nebula-graphd"
+  NEBULA_PORT: "9669"
+  NEBULA_USER: "root"
+  NEBULA_PASSWORD: "nebula"
+
+  PROMETHEUS_ENABLED: "true"
+  JAEGER_ENDPOINT: ""
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: contract-agent-secret
+  namespace: contract-agent
+type: Opaque
+stringData:
+  JWT_SECRET_KEY: "dev-jwt-secret-change-me"
+  DASHSCOPE_API_KEY: ""
+---
+# Frontend nginx 反代配置（指向 K8s 里的 backend Service）
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-nginx
+  namespace: contract-agent
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name _;
+        root /usr/share/nginx/html;
+        index index.html;
+
+        resolver kube-dns.kube-system.svc.cluster.local valid=10s ipv6=off;
+        location /api/ {
+            set $backend_upstream "backend.contract-agent.svc.cluster.local:8000";
+            proxy_pass http://$backend_upstream;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 300s;
+            proxy_send_timeout 300s;
+        }
+
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff2?)$ {
+            expires 30d;
+            add_header Cache-Control "public, immutable";
+        }
+
+        gzip on;
+        gzip_types text/plain text/css application/json application/javascript text/xml;
+        gzip_min_length 1024;
+    }

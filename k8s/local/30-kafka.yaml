@@ -1,0 +1,129 @@
+# Zookeeper + Kafka
+---
+# ============== Zookeeper ==============
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zookeeper-data
+  namespace: contract-agent
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zookeeper
+  namespace: contract-agent
+  labels: { app: zookeeper }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: zookeeper } }
+  template:
+    metadata:
+      labels: { app: zookeeper }
+    spec:
+      containers:
+        - name: zookeeper
+          image: confluentinc/cp-zookeeper:7.6.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ZOOKEEPER_CLIENT_PORT, value: "2181" }
+            - { name: ZOOKEEPER_TICK_TIME, value: "2000" }
+          ports:
+            - { containerPort: 2181, name: client }
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 384Mi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/zookeeper/data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: zookeeper-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper
+  namespace: contract-agent
+spec:
+  ports:
+    - { port: 2181, targetPort: client, name: client }
+  selector: { app: zookeeper }
+---
+# ============== Kafka ==============
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kafka-data
+  namespace: contract-agent
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 4Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka
+  namespace: contract-agent
+  labels: { app: kafka }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: kafka } }
+  template:
+    metadata:
+      labels: { app: kafka }
+    spec:
+      # cp-kafka image 会拒绝 K8s 注入的 KAFKA_PORT=tcp://... 字符串 env
+      enableServiceLinks: false
+      # broker 内部 controller 要通过 advertised host "kafka" 连自己；
+      # K8s 里 "kafka" 默认解析到 Service ClusterIP，会绕一圈失败。
+      # 让 pod 内部直接 resolve 到 loopback。
+      hostAliases:
+        - ip: "127.0.0.1"
+          hostnames: ["kafka"]
+      containers:
+        - name: kafka
+          image: confluentinc/cp-kafka:7.6.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: KAFKA_BROKER_ID, value: "1" }
+            - { name: KAFKA_ZOOKEEPER_CONNECT, value: "zookeeper:2181" }
+            - { name: KAFKA_ADVERTISED_LISTENERS, value: "PLAINTEXT://kafka:9092" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "PLAINTEXT:PLAINTEXT" }
+            - { name: KAFKA_INTER_BROKER_LISTENER_NAME, value: "PLAINTEXT" }
+            - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_AUTO_CREATE_TOPICS_ENABLE, value: "true" }
+          ports:
+            - { containerPort: 9092, name: kafka }
+          readinessProbe:
+            exec:
+              command: ["bash", "-c", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 8
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/kafka/data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: kafka-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: contract-agent
+spec:
+  ports:
+    - { port: 9092, targetPort: kafka, name: kafka }
+  selector: { app: kafka }

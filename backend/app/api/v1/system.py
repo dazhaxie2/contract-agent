@@ -47,6 +47,98 @@ def _ratio(part: int | float, total: int | float) -> float:
     return round(float(part) / float(total), 4) if total else 0.0
 
 
+def _score_from_payload(item: Any) -> float | None:
+    if not isinstance(item, dict):
+        return None
+    for key in ("rerank_score", "relevance_score", "score"):
+        value = item.get(key)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _avg(values: list[float]) -> float:
+    return round(statistics.mean(values), 4) if values else 0.0
+
+
+def _retrieval_metrics_from_rows(rows: list[RetrievalLog]) -> dict[str, Any]:
+    total = len(rows)
+    if total == 0:
+        return {
+            "recall": {"top_1": 0.0, "top_5": 0.0, "top_10": 0.0, "top_20": 0.0},
+            "precision": {"top_10": 0.0},
+            "mrr": 0.0,
+            "ndcg_10": 0.0,
+            "channel_contribution": {"vector": 0.0, "keyword": 0.0, "graph": 0.0},
+            "rerank_improvement": {"before_mrr": 0.0, "after_mrr": 0.0, "improvement": "0.0%"},
+            "sample_count": 0,
+            "ground_truth_available": False,
+            "metric_basis": "retrieval_logs_observed_results",
+        }
+
+    final_counts = [len(row.final_context or []) for row in rows]
+    density_at_10 = _avg([min(count, 10) / 10 for count in final_counts])
+    density_at_20 = _avg([min(count, 20) / 20 for count in final_counts])
+    before_scores = [
+        score
+        for row in rows
+        if (row.merged_hits or [])
+        for score in [_score_from_payload((row.merged_hits or [])[0])]
+        if score is not None
+    ]
+    after_scores = [
+        score
+        for row in rows
+        if (row.rerank_scores or [])
+        for score in [_score_from_payload((row.rerank_scores or [])[0])]
+        if score is not None
+    ]
+    before_avg = _avg(before_scores)
+    after_avg = _avg(after_scores)
+    improvement = ((after_avg - before_avg) / before_avg * 100) if before_avg else 0.0
+
+    return {
+        "recall": {
+            "top_1": _ratio(sum(1 for count in final_counts if count >= 1), total),
+            "top_5": _ratio(sum(1 for count in final_counts if count >= 5), total),
+            "top_10": density_at_10,
+            "top_20": density_at_20,
+        },
+        "precision": {"top_10": density_at_10},
+        "mrr": _ratio(sum(1 for count in final_counts if count >= 1), total),
+        "ndcg_10": density_at_10,
+        "channel_contribution": {
+            "vector": _ratio(sum(1 for row in rows if row.vector_hits), total),
+            "keyword": _ratio(sum(1 for row in rows if row.keyword_hits), total),
+            "graph": _ratio(sum(1 for row in rows if row.graph_hits), total),
+        },
+        "rerank_improvement": {
+            "before_mrr": before_avg,
+            "after_mrr": after_avg,
+            "improvement": f"{round(improvement, 1)}%",
+        },
+        "sample_count": total,
+        "ground_truth_available": False,
+        "metric_basis": "retrieval_logs_observed_results",
+    }
+
+
+async def _load_recent_retrieval_metrics(db: AsyncSession, since: datetime) -> dict[str, Any]:
+    rows = (
+        await db.scalars(
+            select(RetrievalLog)
+            .where(RetrievalLog.created_at >= since)
+            .order_by(RetrievalLog.created_at.desc())
+            .limit(1000)
+        )
+    ).all()
+    return _retrieval_metrics_from_rows(list(rows))
+
+
 def _risk_items(metadata: dict[str, Any]) -> list[dict[str, Any]]:
     report = metadata.get("review_report") or {}
     items = report.get("risk_items") if isinstance(report, dict) else []
@@ -112,6 +204,28 @@ def _workbench_metrics(exec_rows: list[AgentExecution]) -> dict[str, Any]:
         "contract_review_avg_latency_ms": round(avg_review_latency, 2),
         "regression_cases_total": regression_cases,
     }
+
+
+def _execution_model_label(row: AgentExecution) -> str:
+    metadata = row.result_metadata or {}
+    agent_metadata = metadata.get("agent_metadata") or {}
+    if isinstance(agent_metadata, dict) and agent_metadata.get("model"):
+        return str(agent_metadata["model"])
+    if row.model_config_id:
+        return str(row.model_config_id)
+    return settings.llm.generation_model
+
+
+def _quality_scores(row: AgentExecution) -> list[float]:
+    scores = [value for value in [row.relevance_score, row.factuality_score] if value is not None]
+    evaluation = (row.result_metadata or {}).get("evaluation") or {}
+    if isinstance(evaluation, dict):
+        scores.extend(
+            float(value)
+            for key, value in evaluation.items()
+            if key in {"relevance", "factuality", "completeness", "clarity"} and value is not None
+        )
+    return [float(value) for value in scores]
 
 
 @router.get("/config")
@@ -209,6 +323,7 @@ async def get_connectors_health():
 async def get_metrics_overview(db: AsyncSession = Depends(get_read_db)):
     db_switch = get_database_switch_state()
     migration_metrics = get_migration_metrics()
+    db_health = await check_database_health()
     connectors = await connectors_health_service.collect()
     last_24h = datetime.now(timezone.utc) - timedelta(hours=24)
     try:
@@ -291,6 +406,7 @@ async def get_metrics_overview(db: AsyncSession = Depends(get_read_db)):
             )
         ).all()
         workbench_payload = _workbench_metrics(list(metric_rows))
+        retrieval_metrics_payload = await _load_recent_retrieval_metrics(db, last_24h)
     except Exception:
         total_exec = 0
         exec_24h = 0
@@ -302,6 +418,7 @@ async def get_metrics_overview(db: AsyncSession = Depends(get_read_db)):
         total_tokens = 0
         llm_avg_latency = 0.0
         workbench_payload = _workbench_metrics([])
+        retrieval_metrics_payload = _retrieval_metrics_from_rows([])
 
     qps_current = round(exec_24h / 86400, 3)
     error_rate = round((error_24h / exec_24h), 4) if exec_24h else 0.0
@@ -312,15 +429,36 @@ async def get_metrics_overview(db: AsyncSession = Depends(get_read_db)):
         "error_rate": {"rate_5xx": error_rate, "rate_4xx": 0.0},
         "active_connections": active_exec + active_ingestion,
         "services": {
-            "backend": {"status": "healthy", "replicas": 1},
-            "hidb": {"status": "healthy", "replicas": 1},
-            "minio": {"status": "healthy" if connectors["services"].get("minio", {}).get("ok") else "degraded", "replicas": 1},
-            "milvus": {"status": "healthy" if connectors["services"].get("milvus", {}).get("ok") else "degraded", "replicas": 1},
-            "nebula": {"status": "healthy" if connectors["services"].get("nebula", {}).get("ok") else "degraded", "replicas": 1},
-            "kafka": {"status": "healthy" if connectors["services"].get("kafka", {}).get("ok") else "degraded", "replicas": 1},
+            "backend": {"status": "healthy", "replicas": settings.workers, "uptime": 1.0},
+            "hidb": {
+                "status": "healthy" if db_health["status"] == "healthy" else "degraded",
+                "replicas": 1,
+                "uptime": 1.0 if db_health["status"] == "healthy" else 0.0,
+            },
+            "minio": {
+                "status": "healthy" if connectors["services"].get("minio", {}).get("ok") else "degraded",
+                "replicas": 1,
+                "uptime": 1.0 if connectors["services"].get("minio", {}).get("ok") else 0.0,
+            },
+            "milvus": {
+                "status": "healthy" if connectors["services"].get("milvus", {}).get("ok") else "degraded",
+                "replicas": 1,
+                "uptime": 1.0 if connectors["services"].get("milvus", {}).get("ok") else 0.0,
+            },
+            "nebula": {
+                "status": "healthy" if connectors["services"].get("nebula", {}).get("ok") else "degraded",
+                "replicas": 1,
+                "uptime": 1.0 if connectors["services"].get("nebula", {}).get("ok") else 0.0,
+            },
+            "kafka": {
+                "status": "healthy" if connectors["services"].get("kafka", {}).get("ok") else "degraded",
+                "replicas": 1,
+                "uptime": 1.0 if connectors["services"].get("kafka", {}).get("ok") else 0.0,
+            },
             "legal_source": {
                 "status": "healthy" if connectors["services"].get("legal_source", {}).get("ok") else "degraded",
                 "replicas": 1,
+                "uptime": 1.0 if connectors["services"].get("legal_source", {}).get("ok") else 0.0,
             },
         },
         "database_switch": db_switch,
@@ -333,8 +471,8 @@ async def get_metrics_overview(db: AsyncSession = Depends(get_read_db)):
             "error_rate": error_rate,
         },
         "retrieval": {
-            "avg_recall_rate": None,
-            "avg_precision": None,
+            "avg_recall_rate": retrieval_metrics_payload["recall"]["top_10"],
+            "avg_precision": retrieval_metrics_payload["precision"]["top_10"],
             "avg_latency_ms": round(
                 float(
                     (
@@ -346,6 +484,9 @@ async def get_metrics_overview(db: AsyncSession = Depends(get_read_db)):
                 ),
                 2,
             ),
+            "sample_count": retrieval_metrics_payload["sample_count"],
+            "ground_truth_available": retrieval_metrics_payload["ground_truth_available"],
+            "metric_basis": retrieval_metrics_payload["metric_basis"],
         },
         "domain": {
             "documents_total": doc_total,
@@ -364,54 +505,9 @@ async def get_metrics_overview(db: AsyncSession = Depends(get_read_db)):
 async def get_retrieval_metrics(db: AsyncSession = Depends(get_read_db)):
     last_24h = datetime.now(timezone.utc) - timedelta(hours=24)
     try:
-        rows = (
-            await db.scalars(
-                select(RetrievalLog)
-                .where(RetrievalLog.created_at >= last_24h)
-                .order_by(RetrievalLog.created_at.desc())
-                .limit(1000)
-            )
-        ).all()
+        return await _load_recent_retrieval_metrics(db, last_24h)
     except Exception:
-        rows = []
-    total = len(rows)
-    if total == 0:
-        return {
-            "recall": {"top_1": 0.0, "top_5": 0.0, "top_10": 0.0, "top_20": 0.0},
-            "precision": {"top_10": 0.0},
-            "mrr": 0.0,
-            "ndcg_10": 0.0,
-            "channel_contribution": {"vector": 0.0, "keyword": 0.0, "graph": 0.0},
-            "rerank_improvement": {"before_mrr": 0.0, "after_mrr": 0.0, "improvement": "0.0%"},
-        }
-
-    vector_non_empty = sum(1 for row in rows if row.vector_hits)
-    keyword_non_empty = sum(1 for row in rows if row.keyword_hits)
-    graph_non_empty = sum(1 for row in rows if row.graph_hits)
-    avg_final = sum(len(row.final_context or []) for row in rows) / total
-    approx_recall_top10 = min(1.0, avg_final / 10.0)
-
-    return {
-        "recall": {
-            "top_1": round(min(1.0, approx_recall_top10 * 0.45), 4),
-            "top_5": round(min(1.0, approx_recall_top10 * 0.8), 4),
-            "top_10": round(approx_recall_top10, 4),
-            "top_20": round(min(1.0, approx_recall_top10 * 1.2), 4),
-        },
-        "precision": {"top_10": round(min(1.0, approx_recall_top10 * 0.92), 4)},
-        "mrr": round(min(1.0, approx_recall_top10 * 0.95), 4),
-        "ndcg_10": round(min(1.0, approx_recall_top10 * 0.94), 4),
-        "channel_contribution": {
-            "vector": round(vector_non_empty / total, 4),
-            "keyword": round(keyword_non_empty / total, 4),
-            "graph": round(graph_non_empty / total, 4),
-        },
-        "rerank_improvement": {
-            "before_mrr": round(min(1.0, approx_recall_top10 * 0.75), 4),
-            "after_mrr": round(min(1.0, approx_recall_top10 * 0.95), 4),
-            "improvement": f"{round((0.95 - 0.75) * 100, 1)}%",
-        },
-    }
+        return _retrieval_metrics_from_rows([])
 
 
 @router.get("/metrics/llm")
@@ -428,38 +524,28 @@ async def get_llm_metrics(db: AsyncSession = Depends(get_read_db)):
         ).all()
     except Exception:
         exec_rows = []
-    requests_today = len(exec_rows)
-    failures = sum(1 for row in exec_rows if row.status == "failed")
-    total_input = sum(int((row.result_metadata or {}).get("usage", {}).get("prompt_tokens", 0)) for row in exec_rows)
-    total_output = sum(int((row.result_metadata or {}).get("usage", {}).get("completion_tokens", 0)) for row in exec_rows)
-    total_tokens = sum(int(row.total_tokens_used or 0) for row in exec_rows)
-    gen_latencies = [float(row.generation_latency_ms or 0.0) for row in exec_rows if row.generation_latency_ms is not None]
-    avg_gen_latency = statistics.mean(gen_latencies) if gen_latencies else 0.0
-    p99 = sorted(gen_latencies)[min(len(gen_latencies) - 1, int(len(gen_latencies) * 0.99))] if gen_latencies else 0.0
+    grouped: dict[str, list[AgentExecution]] = {}
+    for row in exec_rows:
+        grouped.setdefault(_execution_model_label(row), []).append(row)
 
-    return {
-        "models": {
-            settings.llm.generation_model: {
-                "requests_today": requests_today,
-                "avg_latency_ms": round(avg_gen_latency, 2),
-                "p99_latency_ms": round(p99, 2),
-                "tokens_input": total_input,
-                "tokens_output": total_output or total_tokens,
-                "error_rate": round((failures / requests_today), 4) if requests_today else 0.0,
-                "avg_quality_score": None,
-            },
-            settings.llm.light_model: {
-                "requests_today": 0,
-                "avg_latency_ms": 0.0,
-                "p99_latency_ms": 0.0,
-                "tokens_input": 0,
-                "tokens_output": 0,
-                "error_rate": 0.0,
-            },
-            settings.llm.embedding_model: {
-                "requests_today": 0,
-                "avg_latency_ms": 0.0,
-                "error_rate": 0.0,
-            },
+    models: dict[str, dict[str, Any]] = {}
+    for model_name, rows in grouped.items():
+        usage_rows = [row.result_metadata or {} for row in rows]
+        input_tokens = sum(int((meta.get("usage") or {}).get("input_tokens", 0)) for meta in usage_rows)
+        output_tokens = sum(int((meta.get("usage") or {}).get("output_tokens", 0)) for meta in usage_rows)
+        total_tokens = sum(int(row.total_tokens_used or (row.result_metadata or {}).get("usage", {}).get("total_tokens", 0)) for row in rows)
+        latencies = [float(row.generation_latency_ms or 0.0) for row in rows if row.generation_latency_ms is not None]
+        qualities = [score for row in rows for score in _quality_scores(row)]
+        ordered = sorted(latencies)
+        p99 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.99))] if ordered else 0.0
+        models[model_name] = {
+            "requests_today": len(rows),
+            "avg_latency_ms": round(statistics.mean(latencies), 2) if latencies else 0.0,
+            "p99_latency_ms": round(p99, 2),
+            "tokens_input": input_tokens,
+            "tokens_output": output_tokens or total_tokens,
+            "error_rate": _ratio(sum(1 for row in rows if row.status == "failed"), len(rows)),
+            "avg_quality_score": round(statistics.mean(qualities), 4) if qualities else None,
         }
-    }
+
+    return {"models": models, "sample_count": len(exec_rows), "source": "agent_executions"}

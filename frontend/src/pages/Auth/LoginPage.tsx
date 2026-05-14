@@ -1,19 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import { Button, Card, Form, Input, Typography, message } from 'antd';
+import { AxiosError } from 'axios';
 import { LockOutlined, UserOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 
 import { authApi } from '../../services/api';
+import { useAuthStore } from '../../store';
 
 const { Title, Text } = Typography;
 
 const LoginPage: React.FC = () => {
   const navigate = useNavigate();
+  const auth = useAuthStore();
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (localStorage.getItem('access_token')) {
-      navigate('/reviews', { replace: true });
+      navigate('/chat', { replace: true });
     }
   }, [navigate]);
 
@@ -21,11 +24,17 @@ const LoginPage: React.FC = () => {
     setLoading(true);
     try {
       const token = await authApi.login(values.username, values.password);
-      localStorage.setItem('access_token', token.access_token);
-      localStorage.setItem('refresh_token', token.refresh_token);
-      localStorage.setItem('tenant_id', 'default');
+      if (!token?.access_token) {
+        throw new Error('登录返回缺少 access_token');
+      }
+      auth.login(token.access_token, token.refresh_token, 'default');
       message.success('登录成功');
-      navigate('/reviews', { replace: true });
+      navigate('/chat', { replace: true });
+    } catch (e) {
+      const err = e as AxiosError<{ detail?: string; message?: string }>;
+      const detail = err.response?.data?.detail || err.response?.data?.message;
+      message.error(detail || err.message || '登录失败，请检查账号密码');
+      console.error('[login] failed', err);
     } finally {
       setLoading(false);
     }
@@ -35,7 +44,7 @@ const LoginPage: React.FC = () => {
     <div className="login-page">
       <Card className="login-card">
         <div style={{ marginBottom: 24 }}>
-          <Title level={3} style={{ marginBottom: 8 }}>
+          <Title level={4} style={{ marginBottom: 8 }}>
             合同合规 Agent
           </Title>
           <Text type="secondary">登录后进入合同审查工作台</Text>

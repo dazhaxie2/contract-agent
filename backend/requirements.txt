@@ -55,6 +55,8 @@ prometheus-fastapi-instrumentator==7.0.2
 # Security
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+# bcrypt 4.x 移除了 72-byte 兼容路径，passlib 1.7.4 的 detect_wrap_bug 会抛 ValueError 让 login 500
+bcrypt>=3.2,<4.0
 cryptography==44.0.0
 
 # Utilities

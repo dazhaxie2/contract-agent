@@ -20,6 +20,8 @@ os.environ.setdefault("DB_PROVIDER", "hidb_pg")
 os.environ.setdefault("DB_DUAL_WRITE_ENABLED", "false")
 os.environ.setdefault("INGESTION_USE_KAFKA", "false")
 os.environ.setdefault("LEGAL_SOURCE_ENABLED", "false")
+os.environ.setdefault("LLM_REQUIRE_EXTERNAL", "false")
+os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 
 import app.models  # noqa: E402,F401
 from app.core.database import Base, WriteSessionLocal, close_db, init_db  # noqa: E402
@@ -43,6 +45,17 @@ async def app_client() -> AsyncIterator[AsyncClient]:
 
 @pytest_asyncio.fixture()
 async def auth_headers(app_client: AsyncClient) -> dict[str, str]:
+    register_resp = await app_client.post(
+        "/api/v1/auth/register",
+        json={
+            "username": "admin",
+            "email": "admin@example.com",
+            "password": "password123",
+            "full_name": "Admin",
+            "tenant_id": "default",
+        },
+    )
+    assert register_resp.status_code in {200, 409}, register_resp.text
     resp = await app_client.post(
         "/api/v1/auth/login",
         json={"username": "admin", "password": "password123"},

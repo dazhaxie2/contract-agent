@@ -34,7 +34,7 @@ const SystemDashboard: React.FC = () => {
       setLatencyHistory((prev) => appendPoint(prev, data.latency_p99));
       setErrorRateHistory((prev) => appendPoint(prev, data.error_rate));
     } catch (e) {
-      setError('Failed to load system metrics');
+      setError('系统指标加载失败');
     } finally {
       setLoading(false);
     }
@@ -68,9 +68,9 @@ const SystemDashboard: React.FC = () => {
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
         <Space style={{ width: '100%', justifyContent: 'space-between' }}>
           <Title level={4} style={{ margin: 0 }}>
-            System Dashboard
+            系统总览
           </Title>
-          <Text type="secondary">{loading ? 'Refreshing...' : 'Auto refresh: 15s'}</Text>
+          <Text type="secondary">{loading ? '刷新中…' : '自动刷新：15 秒'}</Text>
         </Space>
 
         {error ? <Alert type="error" message={error} showIcon /> : null}
@@ -78,47 +78,47 @@ const SystemDashboard: React.FC = () => {
         <Row gutter={[16, 16]}>
           <Col xs={24} md={8}>
             <Card>
-              <Statistic title="Current QPS" value={qpsCurrent} precision={3} />
+              <Statistic title="当前 QPS" value={qpsCurrent} precision={3} />
             </Card>
           </Col>
           <Col xs={24} md={8}>
             <Card>
-              <Statistic title="P99 Latency (ms)" value={p99Current} precision={2} />
+              <Statistic title="P99 延迟 (ms)" value={p99Current} precision={2} />
             </Card>
           </Col>
           <Col xs={24} md={8}>
             <Card>
-              <Statistic title="5xx Error Rate" value={errCurrent * 100} precision={2} suffix="%" />
+              <Statistic title="5xx 错误率" value={errCurrent * 100} precision={2} suffix="%" />
             </Card>
           </Col>
         </Row>
 
-        <Card title="Contract Workbench Metrics" loading={loading && !metrics}>
+        <Card title="合同工作台指标" loading={loading && !metrics}>
           <Row gutter={[16, 16]}>
             <Col xs={12} md={8} xl={4}>
-              <Statistic title="Plan Success" value={(workbench?.plan_success_rate || 0) * 100} precision={1} suffix="%" />
+              <Statistic title="规划成功率" value={(workbench?.plan_success_rate || 0) * 100} precision={1} suffix="%" />
             </Col>
             <Col xs={12} md={8} xl={4}>
-              <Statistic title="Tool Failure" value={(workbench?.tool_failure_rate || 0) * 100} precision={1} suffix="%" />
+              <Statistic title="工具失败率" value={(workbench?.tool_failure_rate || 0) * 100} precision={1} suffix="%" />
             </Col>
             <Col xs={12} md={8} xl={4}>
-              <Statistic title="Citation Coverage" value={(workbench?.citation_coverage_rate || 0) * 100} precision={1} suffix="%" />
+              <Statistic title="引用覆盖率" value={(workbench?.citation_coverage_rate || 0) * 100} precision={1} suffix="%" />
             </Col>
             <Col xs={12} md={8} xl={4}>
-              <Statistic title="Low Confidence" value={(workbench?.low_confidence_rate || 0) * 100} precision={1} suffix="%" />
+              <Statistic title="低置信占比" value={(workbench?.low_confidence_rate || 0) * 100} precision={1} suffix="%" />
             </Col>
             <Col xs={12} md={8} xl={4}>
-              <Statistic title="Feedback Avg" value={workbench?.user_feedback_avg || 0} precision={2} />
+              <Statistic title="用户反馈均分" value={workbench?.user_feedback_avg || 0} precision={2} />
             </Col>
             <Col xs={12} md={8} xl={4}>
-              <Statistic title="Review Avg Latency" value={workbench?.contract_review_avg_latency_ms || 0} precision={0} suffix="ms" />
+              <Statistic title="审查平均延迟" value={workbench?.contract_review_avg_latency_ms || 0} precision={0} suffix="ms" />
             </Col>
           </Row>
         </Card>
 
         <Row gutter={[16, 16]}>
           <Col xs={24} lg={12}>
-            <Card title="QPS Trend" loading={loading && qpsHistory.length === 0}>
+            <Card title="QPS 趋势" loading={loading && qpsHistory.length === 0}>
               <Line
                 data={qpsHistory.map((p) => ({ time: p.timestamp, value: p.value }))}
                 xField="time"
@@ -130,7 +130,7 @@ const SystemDashboard: React.FC = () => {
             </Card>
           </Col>
           <Col xs={24} lg={12}>
-            <Card title="P99 Latency Trend" loading={loading && latencyHistory.length === 0}>
+            <Card title="P99 延迟趋势" loading={loading && latencyHistory.length === 0}>
               <Line
                 data={latencyHistory.map((p) => ({ time: p.timestamp, value: p.value }))}
                 xField="time"
@@ -143,17 +143,17 @@ const SystemDashboard: React.FC = () => {
           </Col>
         </Row>
 
-        <Card title="Service Health" loading={loading && serviceRows.length === 0}>
+        <Card title="服务健康状况" loading={loading && serviceRows.length === 0}>
           <Table
             rowKey="name"
             size="small"
             pagination={false}
             dataSource={serviceRows}
             columns={[
-              { title: 'Service', dataIndex: 'name' },
-              { title: 'Status', dataIndex: 'status' },
-              { title: 'Uptime', dataIndex: 'uptime' },
-              { title: 'Last Check', dataIndex: 'last_check' },
+              { title: '服务', dataIndex: 'name' },
+              { title: '状态', dataIndex: 'status' },
+              { title: '可用率', dataIndex: 'uptime' },
+              { title: '最近检查', dataIndex: 'last_check' },
             ]}
           />
         </Card>

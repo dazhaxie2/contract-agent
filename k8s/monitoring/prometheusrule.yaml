@@ -1,0 +1,117 @@
+# contract-agent 业务侧告警
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: contract-agent-rules
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: contract-agent
+    release: kps
+spec:
+  groups:
+    # ---------------- HTTP 层 ----------------
+    - name: contract-agent.http
+      interval: 30s
+      rules:
+        - alert: ContractAgentTargetDown
+          expr: |
+            up{job="contract-agent-backend"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            service: contract-agent
+          annotations:
+            summary: "contract-agent backend 实例下线"
+            description: "{{ $labels.instance }} 已连续 1 分钟无法被采集。"
+
+        - alert: ContractAgentHigh5xxRate
+          expr: |
+            (
+              sum(rate(contract_agent_requests_total{status_code=~"5.."}[5m]))
+              /
+              sum(rate(contract_agent_requests_total[5m]))
+            ) > 0.05
+          for: 5m
+          labels:
+            severity: critical
+            service: contract-agent
+          annotations:
+            summary: "5xx 错误率超过 5%"
+            description: "近 5 分钟 5xx 占比 = {{ $value | humanizePercentage }}。"
+
+        - alert: ContractAgentP99LatencyHigh
+          expr: |
+            histogram_quantile(
+              0.99,
+              sum by (le, path) (rate(contract_agent_request_duration_seconds_bucket[5m]))
+            ) > 2
+          for: 5m
+          labels:
+            severity: warning
+            service: contract-agent
+          annotations:
+            summary: "P99 延迟超过 2s"
+            description: "path={{ $labels.path }} P99 = {{ $value }}s。"
+
+    # ---------------- LLM 推理（云端） ----------------
+    - name: contract-agent.llm
+      interval: 30s
+      rules:
+        - alert: ContractAgentLLMErrorRateHigh
+          expr: |
+            (
+              sum by (model) (rate(contract_agent_llm_requests_total{status="error"}[5m]))
+              /
+              clamp_min(sum by (model) (rate(contract_agent_llm_requests_total[5m])), 0.001)
+            ) > 0.05
+          for: 5m
+          labels:
+            severity: critical
+            service: contract-agent
+          annotations:
+            summary: "LLM 调用错误率超过 5% (model={{ $labels.model }})"
+            description: "近 5 分钟 model={{ $labels.model }} 错误率 = {{ $value | humanizePercentage }}。"
+
+        - alert: ContractAgentLLMLatencyHigh
+          expr: |
+            (
+              sum by (model) (rate(contract_agent_llm_duration_seconds_sum[5m]))
+              /
+              clamp_min(sum by (model) (rate(contract_agent_llm_duration_seconds_count[5m])), 0.001)
+            ) > 10
+          for: 5m
+          labels:
+            severity: warning
+            service: contract-agent
+          annotations:
+            summary: "LLM 平均延迟超过 10s (model={{ $labels.model }})"
+            description: "近 5 分钟 model={{ $labels.model }} 平均延迟 = {{ $value }}s。"
+
+        - alert: ContractAgentLLMTokenSpike
+          expr: |
+            sum(rate(contract_agent_llm_tokens_total[5m])) > 5000
+          for: 10m
+          labels:
+            severity: info
+            service: contract-agent
+          annotations:
+            summary: "LLM Token 速率异常 (>5k/s 持续 10min)"
+            description: "近 5 分钟 Token 速率 = {{ $value }} tokens/s。请确认是否成本异常。"
+
+    # ---------------- 检索质量 ----------------
+    - name: contract-agent.retrieval
+      interval: 30s
+      rules:
+        - alert: ContractAgentRetrievalErrorRateHigh
+          expr: |
+            (
+              sum by (retrieval_type) (rate(contract_agent_retrieval_total{status="error"}[5m]))
+              /
+              clamp_min(sum by (retrieval_type) (rate(contract_agent_retrieval_total[5m])), 0.001)
+            ) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+            service: contract-agent
+          annotations:
+            summary: "检索错误率超过 10% (type={{ $labels.retrieval_type }})"

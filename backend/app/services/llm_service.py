@@ -23,6 +23,31 @@ try:
 except Exception:
     HAS_DASHSCOPE = False
 
+try:
+    from app.middleware.metrics import (
+        HAS_PROMETHEUS,
+        LLM_LATENCY,
+        LLM_REQUEST_COUNT,
+        LLM_TOKEN_COUNT,
+    )
+except Exception:
+    HAS_PROMETHEUS = False
+
+
+def _record_llm(model: str, status: str, latency_s: float, tokens_in: int = 0, tokens_out: int = 0) -> None:
+    """埋点到 prometheus_client；HAS_PROMETHEUS=False 时静默 no-op。"""
+    if not HAS_PROMETHEUS:
+        return
+    try:
+        LLM_REQUEST_COUNT.labels(model=model, status=status).inc()
+        LLM_LATENCY.labels(model=model).observe(max(latency_s, 0.0))
+        if tokens_in:
+            LLM_TOKEN_COUNT.labels(model=model, type="input").inc(tokens_in)
+        if tokens_out:
+            LLM_TOKEN_COUNT.labels(model=model, type="output").inc(tokens_out)
+    except Exception as exc:  # pragma: no cover - 监控不应阻塞业务
+        logger.debug(f"LLM metrics record failed: {exc}")
+
 
 class LLMCallError(Exception):
     pass
@@ -47,7 +72,7 @@ def _seeded_random_vector(text: str, dim: int) -> list[float]:
     return [rng.random() for _ in range(dim)]
 
 
-def _mock_content(messages: list[dict]) -> str:
+def _local_fallback_content(messages: list[dict]) -> str:
     latest_user = ""
     for msg in reversed(messages):
         if msg.get("role") == "user":
@@ -55,8 +80,8 @@ def _mock_content(messages: list[dict]) -> str:
             break
     preview = latest_user.strip().replace("\n", " ")[:600]
     return (
-        "Mock response (no external model configured).\n"
-        "This output is generated locally for development/testing only.\n"
+        "Local fallback response (LLM_REQUIRE_EXTERNAL=false).\n"
+        "This output is generated only when local fallback is explicitly enabled.\n"
         f"User input preview: {preview}"
     )
 
@@ -112,6 +137,13 @@ class AliyunLLMService:
 
                     choice = response.output.choices[0]
                     latency_ms = (time.perf_counter() - started) * 1000
+                    _record_llm(
+                        model=model,
+                        status="success",
+                        latency_s=latency_ms / 1000,
+                        tokens_in=int(response.usage.input_tokens or 0),
+                        tokens_out=int(response.usage.output_tokens or 0),
+                    )
                     payload = {
                         "content": choice.message.content,
                         "role": "assistant",
@@ -129,22 +161,31 @@ class AliyunLLMService:
                     return payload
 
                 latency_ms = (time.perf_counter() - started) * 1000
-                content = _mock_content(messages)
+                content = _local_fallback_content(messages)
+                fallback_in = sum(max(1, len(str(m.get("content", ""))) // 4) for m in messages)
+                fallback_out = max(1, len(content) // 4)
+                _record_llm(
+                    model="local-fallback",
+                    status="fallback",
+                    latency_s=latency_ms / 1000,
+                    tokens_in=fallback_in,
+                    tokens_out=fallback_out,
+                )
                 return {
                     "content": content,
                     "role": "assistant",
-                    "model": model or "mock",
+                    "model": model or "local-fallback",
                     "usage": {
-                        "input_tokens": sum(max(1, len(str(m.get("content", ""))) // 4) for m in messages),
-                        "output_tokens": max(1, len(content) // 4),
-                        "total_tokens": sum(max(1, len(str(m.get("content", ""))) // 4) for m in messages)
-                        + max(1, len(content) // 4),
+                        "input_tokens": fallback_in,
+                        "output_tokens": fallback_out,
+                        "total_tokens": fallback_in + fallback_out,
                     },
                     "latency_ms": round(latency_ms, 2),
                     "finish_reason": "stop",
                 }
             except Exception as exc:
                 latency_ms = (time.perf_counter() - started) * 1000
+                _record_llm(model=model, status="error", latency_s=latency_ms / 1000)
                 logger.error(f"LLM generate failed: {exc} model={model} latency_ms={latency_ms:.2f}")
                 raise
 
@@ -160,33 +201,73 @@ class AliyunLLMService:
         max_tokens = max_tokens or settings.llm.generation_max_tokens
 
         async with self._semaphore:
-            _ensure_model_available()
-            if _external_model_available():
-                loop = asyncio.get_event_loop()
-                responses = await loop.run_in_executor(
-                    None,
-                    lambda: Generation.call(
-                        model=model,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        result_format="message",
-                        stream=True,
-                        incremental_output=True,
-                    ),
-                )
-                for response in responses:
-                    if response.status_code == 200:
+            started = time.perf_counter()
+            status = "error"
+            final_usage = None
+            out_chars = 0
+            in_chars = sum(len(str(m.get("content", ""))) for m in messages)
+            record_model = model
+            try:
+                _ensure_model_available()
+                if _external_model_available():
+                    loop = asyncio.get_event_loop()
+                    responses = await loop.run_in_executor(
+                        None,
+                        lambda: Generation.call(
+                            model=model,
+                            messages=messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            result_format="message",
+                            stream=True,
+                            incremental_output=True,
+                        ),
+                    )
+                    for response in responses:
+                        if response.status_code != 200:
+                            continue
+                        # DashScope 在 incremental_output=True 时通常会在最后一帧带 usage
+                        usage = getattr(response, "usage", None)
+                        if usage is not None and getattr(usage, "total_tokens", None):
+                            final_usage = usage
                         text = response.output.choices[0].message.content
                         if text:
+                            out_chars += len(text)
                             yield text
-                return
+                    status = "success"
+                    return
 
-            content = _mock_content(messages)
-            words = content.split()
-            for word in words:
-                yield word + " "
-                await asyncio.sleep(0.01)
+                record_model = "local-fallback"
+                content = _local_fallback_content(messages)
+                words = content.split()
+                for word in words:
+                    token = word + " "
+                    out_chars += len(token)
+                    yield token
+                    await asyncio.sleep(0.01)
+                status = "fallback"
+            except GeneratorExit:
+                # 下游（HTTP client / SSE 连接）提前断开
+                status = "canceled"
+                raise
+            except Exception:
+                status = "error"
+                raise
+            finally:
+                latency_s = time.perf_counter() - started
+                if final_usage is not None:
+                    tokens_in = int(getattr(final_usage, "input_tokens", 0) or 0)
+                    tokens_out = int(getattr(final_usage, "output_tokens", 0) or 0)
+                else:
+                    tokens_in = max(1, in_chars // 4)
+                    tokens_out = max(0, out_chars // 4)
+                _record_llm(
+                    model=record_model,
+                    status=status,
+                    latency_s=latency_s,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                )
 
     @retry(
         stop=stop_after_attempt(3),
@@ -195,23 +276,41 @@ class AliyunLLMService:
     )
     async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
         model = model or settings.llm.embedding_model
+        approx_tokens_in = sum(max(1, len(t) // 4) for t in texts)
         async with self._semaphore:
             _ensure_model_available()
-            if _external_model_available():
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: TextEmbedding.call(
-                        model=model,
-                        input=texts,
-                        dimension=settings.llm.embedding_dimension,
-                    ),
-                )
-                if response.status_code != 200:
-                    raise LLMCallError(f"Embedding error: {response.code} {response.message}")
-                return [item["embedding"] for item in response.output["embeddings"]]
+            started = time.perf_counter()
+            try:
+                if _external_model_available():
+                    loop = asyncio.get_event_loop()
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: TextEmbedding.call(
+                            model=model,
+                            input=texts,
+                            dimension=settings.llm.embedding_dimension,
+                        ),
+                    )
+                    if response.status_code != 200:
+                        raise LLMCallError(f"Embedding error: {response.code} {response.message}")
+                    latency_s = time.perf_counter() - started
+                    usage = getattr(response, "usage", None)
+                    tokens_in = int(getattr(usage, "total_tokens", 0) or approx_tokens_in)
+                    _record_llm(model=model, status="success", latency_s=latency_s, tokens_in=tokens_in)
+                    return [item["embedding"] for item in response.output["embeddings"]]
 
-            return [_seeded_random_vector(text, settings.llm.embedding_dimension) for text in texts]
+                latency_s = time.perf_counter() - started
+                _record_llm(
+                    model="local-fallback",
+                    status="fallback",
+                    latency_s=latency_s,
+                    tokens_in=approx_tokens_in,
+                )
+                return [_seeded_random_vector(text, settings.llm.embedding_dimension) for text in texts]
+            except Exception:
+                latency_s = time.perf_counter() - started
+                _record_llm(model=model, status="error", latency_s=latency_s)
+                raise
 
     async def rerank(
         self,
@@ -221,38 +320,59 @@ class AliyunLLMService:
         top_k: int = 10,
     ) -> list[dict]:
         model = model or settings.llm.reranker_model
+        approx_tokens_in = max(1, len(query) // 4) + sum(max(1, len(d or "") // 4) for d in documents)
         async with self._semaphore:
             _ensure_model_available()
-            if _external_model_available():
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: dashscope.TextReRank.call(
+            started = time.perf_counter()
+            try:
+                if _external_model_available():
+                    loop = asyncio.get_event_loop()
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: dashscope.TextReRank.call(
+                            model=model,
+                            query=query,
+                            documents=documents,
+                            top_n=top_k,
+                            return_documents=True,
+                        ),
+                    )
+                    if response.status_code != 200:
+                        raise LLMCallError(f"Rerank error: {response.code}")
+                    latency_s = time.perf_counter() - started
+                    _record_llm(
                         model=model,
-                        query=query,
-                        documents=documents,
-                        top_n=top_k,
-                        return_documents=True,
-                    ),
-                )
-                if response.status_code != 200:
-                    raise LLMCallError(f"Rerank error: {response.code}")
-                return [
-                    {
-                        "index": item["index"],
-                        "score": item["relevance_score"],
-                        "text": item.get("document", {}).get("text", ""),
-                    }
-                    for item in response.output["results"]
-                ]
+                        status="success",
+                        latency_s=latency_s,
+                        tokens_in=approx_tokens_in,
+                    )
+                    return [
+                        {
+                            "index": item["index"],
+                            "score": item["relevance_score"],
+                            "text": item.get("document", {}).get("text", ""),
+                        }
+                        for item in response.output["results"]
+                    ]
 
-            scored = []
-            q = query.lower()
-            for i, doc in enumerate(documents):
-                score = SequenceMatcher(None, q[:400], (doc or "").lower()[:400]).ratio()
-                scored.append({"index": i, "score": score, "text": doc})
-            scored.sort(key=lambda x: x["score"], reverse=True)
-            return scored[:top_k]
+                scored = []
+                q = query.lower()
+                for i, doc in enumerate(documents):
+                    score = SequenceMatcher(None, q[:400], (doc or "").lower()[:400]).ratio()
+                    scored.append({"index": i, "score": score, "text": doc})
+                scored.sort(key=lambda x: x["score"], reverse=True)
+                latency_s = time.perf_counter() - started
+                _record_llm(
+                    model="local-fallback",
+                    status="fallback",
+                    latency_s=latency_s,
+                    tokens_in=approx_tokens_in,
+                )
+                return scored[:top_k]
+            except Exception:
+                latency_s = time.perf_counter() - started
+                _record_llm(model=model, status="error", latency_s=latency_s)
+                raise
 
     async def light_generate(self, messages: list[dict], max_tokens: int | None = None) -> dict:
         return await self.generate(

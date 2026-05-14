@@ -1,0 +1,252 @@
+# Nebula Graph：metad → storaged → graphd → init Job
+# init Job 在 graphd Ready 后跑 ADD HOSTS 把 storaged 注册进集群
+---
+# ============== metad ==============
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nebula-metad-data
+  namespace: contract-agent
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nebula-metad
+  namespace: contract-agent
+  labels: { app: nebula-metad }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: nebula-metad } }
+  template:
+    metadata:
+      labels: { app: nebula-metad }
+    spec:
+      hostname: nebula-metad
+      subdomain: nebula
+      containers:
+        - name: metad
+          image: vesoft/nebula-metad:v3.8.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: USER, value: root }
+            - { name: TZ, value: Asia/Shanghai }
+          args:
+            - --meta_server_addrs=nebula-metad:9559
+            - --local_ip=nebula-metad
+            - --ws_ip=nebula-metad
+            - --port=9559
+            - --data_path=/data/meta
+            - --log_dir=/logs
+            - --v=0
+            - --minloglevel=0
+          ports:
+            - { containerPort: 9559, name: meta }
+            - { containerPort: 19559, name: http }
+          readinessProbe:
+            httpGet: { path: /status, port: http }
+            periodSeconds: 10
+            initialDelaySeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 384Mi }
+          volumeMounts:
+            - { name: data, mountPath: /data/meta }
+            - { name: logs, mountPath: /logs }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: nebula-metad-data }
+        - name: logs
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nebula-metad
+  namespace: contract-agent
+spec:
+  ports:
+    - { port: 9559, targetPort: meta, name: meta }
+    - { port: 19559, targetPort: http, name: http }
+  selector: { app: nebula-metad }
+---
+# ============== storaged ==============
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nebula-storaged-data
+  namespace: contract-agent
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 4Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nebula-storaged
+  namespace: contract-agent
+  labels: { app: nebula-storaged }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: nebula-storaged } }
+  template:
+    metadata:
+      labels: { app: nebula-storaged }
+    spec:
+      hostname: nebula-storaged
+      subdomain: nebula
+      containers:
+        - name: storaged
+          image: vesoft/nebula-storaged:v3.8.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: USER, value: root }
+            - { name: TZ, value: Asia/Shanghai }
+          args:
+            - --meta_server_addrs=nebula-metad:9559
+            - --local_ip=nebula-storaged
+            - --ws_ip=nebula-storaged
+            - --port=9779
+            - --data_path=/data/storage
+            - --log_dir=/logs
+            - --v=0
+            - --minloglevel=0
+          ports:
+            - { containerPort: 9779, name: storage }
+            - { containerPort: 19779, name: http }
+          # 注意：storaged 在 ADD HOSTS 之前 /status 仍能 200，所以这里只看进程存活
+          startupProbe:
+            tcpSocket: { port: storage }
+            periodSeconds: 5
+            failureThreshold: 24
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          volumeMounts:
+            - { name: data, mountPath: /data/storage }
+            - { name: logs, mountPath: /logs }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: nebula-storaged-data }
+        - name: logs
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nebula-storaged
+  namespace: contract-agent
+spec:
+  ports:
+    - { port: 9779, targetPort: storage, name: storage }
+    - { port: 19779, targetPort: http, name: http }
+  selector: { app: nebula-storaged }
+---
+# ============== graphd ==============
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nebula-graphd
+  namespace: contract-agent
+  labels: { app: nebula-graphd }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: nebula-graphd } }
+  template:
+    metadata:
+      labels: { app: nebula-graphd }
+    spec:
+      hostname: nebula-graphd
+      subdomain: nebula
+      containers:
+        - name: graphd
+          image: vesoft/nebula-graphd:v3.8.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: USER, value: root }
+            - { name: TZ, value: Asia/Shanghai }
+          args:
+            - --meta_server_addrs=nebula-metad:9559
+            - --port=9669
+            - --local_ip=nebula-graphd
+            - --ws_ip=nebula-graphd
+            - --log_dir=/logs
+            - --v=0
+            - --minloglevel=0
+          ports:
+            - { containerPort: 9669, name: graph }
+            - { containerPort: 19669, name: http }
+          readinessProbe:
+            httpGet: { path: /status, port: http }
+            periodSeconds: 10
+            initialDelaySeconds: 15
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          volumeMounts:
+            - { name: logs, mountPath: /logs }
+      volumes:
+        - name: logs
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nebula-graphd
+  namespace: contract-agent
+spec:
+  ports:
+    - { port: 9669, targetPort: graph, name: graph }
+    - { port: 19669, targetPort: http, name: http }
+  selector: { app: nebula-graphd }
+---
+# ============== init Job：注册 storaged 到集群 ==============
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nebula-init
+  namespace: contract-agent
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels: { app: nebula-init }
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: console
+          image: vesoft/nebula-console:v3.8.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "Wait graphd ready..."
+              for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+                /usr/local/bin/nebula-console -addr nebula-graphd -port 9669 \
+                    -u root -p nebula -e "SHOW HOSTS;" > /tmp/hosts 2>&1 && break
+                sleep 5
+              done
+              if grep -q "nebula-storaged" /tmp/hosts; then
+                echo "storaged already registered"; exit 0
+              fi
+              for i in 1 2 3 4 5 6 7 8 9 10; do
+                /usr/local/bin/nebula-console -addr nebula-graphd -port 9669 \
+                    -u root -p nebula \
+                    -e "ADD HOSTS \"nebula-storaged\":9779" > /tmp/out 2>&1 || true
+                if grep -qE "(Execution succeeded|Existed)" /tmp/out; then
+                  echo "OK"; exit 0
+                fi
+                cat /tmp/out
+                sleep 3
+              done
+              echo "ADD HOSTS failed"; exit 1

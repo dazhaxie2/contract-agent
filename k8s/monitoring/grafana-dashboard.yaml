@@ -1,0 +1,192 @@
+# Grafana dashboard - 由 kube-prometheus-stack 的 grafana sidecar 自动加载
+# 标签 grafana_dashboard=1 触发 sidecar 扫描
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: contract-agent-overview
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: contract-agent
+data:
+  contract-agent-overview.json: |
+    {
+      "title": "Contract Agent / Overview",
+      "uid": "contract-agent-overview",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "15s",
+      "timezone": "Asia/Shanghai",
+      "tags": ["contract-agent"],
+      "time": { "from": "now-1h", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "datasource",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": { "selected": false, "text": "Prometheus", "value": "Prometheus" }
+          },
+          {
+            "name": "model",
+            "type": "query",
+            "datasource": { "type": "prometheus", "uid": "$datasource" },
+            "query": "label_values(contract_agent_llm_requests_total, model)",
+            "refresh": 2,
+            "includeAll": true,
+            "multi": true,
+            "current": { "selected": true, "text": "All", "value": "$__all" }
+          }
+        ]
+      },
+      "panels": [
+        {
+          "type": "row", "title": "HTTP",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+        },
+        {
+          "type": "stat", "title": "QPS",
+          "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "targets": [{ "expr": "sum(rate(contract_agent_requests_total[1m]))" }],
+          "fieldConfig": { "defaults": { "unit": "reqps", "decimals": 2 } }
+        },
+        {
+          "type": "stat", "title": "5xx Rate",
+          "gridPos": { "h": 5, "w": 6, "x": 6, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "targets": [{
+            "expr": "sum(rate(contract_agent_requests_total{status_code=~\"5..\"}[5m])) / clamp_min(sum(rate(contract_agent_requests_total[5m])),0.001)"
+          }],
+          "fieldConfig": { "defaults": { "unit": "percentunit", "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null }, { "color": "orange", "value": 0.01 }, { "color": "red", "value": 0.05 }
+          ] } } }
+        },
+        {
+          "type": "stat", "title": "P99 Latency",
+          "gridPos": { "h": 5, "w": 6, "x": 12, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "targets": [{
+            "expr": "histogram_quantile(0.99, sum by (le) (rate(contract_agent_request_duration_seconds_bucket[5m])))"
+          }],
+          "fieldConfig": { "defaults": { "unit": "s", "decimals": 3 } }
+        },
+        {
+          "type": "stat", "title": "活跃请求",
+          "gridPos": { "h": 5, "w": 6, "x": 18, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "targets": [{ "expr": "sum(contract_agent_active_requests)" }],
+          "fieldConfig": { "defaults": { "unit": "short" } }
+        },
+        {
+          "type": "timeseries", "title": "HTTP QPS by status_code",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "targets": [{
+            "expr": "sum by (status_code) (rate(contract_agent_requests_total[1m]))",
+            "legendFormat": "{{status_code}}"
+          }],
+          "fieldConfig": { "defaults": { "unit": "reqps" } }
+        },
+        {
+          "type": "timeseries", "title": "P50/P95/P99 Latency",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "targets": [
+            { "expr": "histogram_quantile(0.50, sum by (le) (rate(contract_agent_request_duration_seconds_bucket[5m])))", "legendFormat": "p50" },
+            { "expr": "histogram_quantile(0.95, sum by (le) (rate(contract_agent_request_duration_seconds_bucket[5m])))", "legendFormat": "p95" },
+            { "expr": "histogram_quantile(0.99, sum by (le) (rate(contract_agent_request_duration_seconds_bucket[5m])))", "legendFormat": "p99" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "s" } }
+        },
+
+        {
+          "type": "row", "title": "LLM (云端推理)",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 }
+        },
+        {
+          "type": "stat", "title": "LLM QPS",
+          "gridPos": { "h": 5, "w": 6, "x": 0, "y": 15 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "targets": [{
+            "expr": "sum(rate(contract_agent_llm_requests_total{model=~\"$model\"}[1m]))"
+          }],
+          "fieldConfig": { "defaults": { "unit": "reqps", "decimals": 2 } }
+        },
+        {
+          "type": "stat", "title": "LLM 错误率",
+          "gridPos": { "h": 5, "w": 6, "x": 6, "y": 15 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "targets": [{
+            "expr": "sum(rate(contract_agent_llm_requests_total{status=\"error\",model=~\"$model\"}[5m])) / clamp_min(sum(rate(contract_agent_llm_requests_total{model=~\"$model\"}[5m])),0.001)"
+          }],
+          "fieldConfig": { "defaults": { "unit": "percentunit", "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null }, { "color": "orange", "value": 0.02 }, { "color": "red", "value": 0.05 }
+          ] } } }
+        },
+        {
+          "type": "stat", "title": "Token / s (in+out)",
+          "gridPos": { "h": 5, "w": 6, "x": 12, "y": 15 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "targets": [{
+            "expr": "sum(rate(contract_agent_llm_tokens_total{model=~\"$model\"}[1m]))"
+          }],
+          "fieldConfig": { "defaults": { "unit": "short" } }
+        },
+        {
+          "type": "stat", "title": "LLM 平均延迟",
+          "gridPos": { "h": 5, "w": 6, "x": 18, "y": 15 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "targets": [{
+            "expr": "sum(rate(contract_agent_llm_duration_seconds_sum{model=~\"$model\"}[5m])) / clamp_min(sum(rate(contract_agent_llm_duration_seconds_count{model=~\"$model\"}[5m])),0.001)"
+          }],
+          "fieldConfig": { "defaults": { "unit": "s", "decimals": 2 } }
+        },
+        {
+          "type": "timeseries", "title": "LLM Token 速率 (input vs output)",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "targets": [{
+            "expr": "sum by (type) (rate(contract_agent_llm_tokens_total{model=~\"$model\"}[1m]))",
+            "legendFormat": "{{type}}"
+          }],
+          "fieldConfig": { "defaults": { "unit": "short" } }
+        },
+        {
+          "type": "timeseries", "title": "LLM 延迟分位",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "targets": [
+            { "expr": "histogram_quantile(0.50, sum by (le, model) (rate(contract_agent_llm_duration_seconds_bucket{model=~\"$model\"}[5m])))", "legendFormat": "{{model}} p50" },
+            { "expr": "histogram_quantile(0.95, sum by (le, model) (rate(contract_agent_llm_duration_seconds_bucket{model=~\"$model\"}[5m])))", "legendFormat": "{{model}} p95" },
+            { "expr": "histogram_quantile(0.99, sum by (le, model) (rate(contract_agent_llm_duration_seconds_bucket{model=~\"$model\"}[5m])))", "legendFormat": "{{model}} p99" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "s" } }
+        },
+
+        {
+          "type": "row", "title": "检索 / 缓存",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 28 }
+        },
+        {
+          "type": "timeseries", "title": "检索 QPS by type",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 29 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "targets": [{
+            "expr": "sum by (retrieval_type) (rate(contract_agent_retrieval_total[1m]))",
+            "legendFormat": "{{retrieval_type}}"
+          }],
+          "fieldConfig": { "defaults": { "unit": "reqps" } }
+        },
+        {
+          "type": "timeseries", "title": "缓存命中率 (L1 / L2)",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 29 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "targets": [{
+            "expr": "sum by (cache_level) (rate(contract_agent_cache_hits_total[5m])) / clamp_min(sum by (cache_level) (rate(contract_agent_cache_hits_total[5m])) + sum by (cache_level) (rate(contract_agent_cache_misses_total[5m])), 0.001)",
+            "legendFormat": "{{cache_level}}"
+          }],
+          "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } }
+        }
+      ]
+    }

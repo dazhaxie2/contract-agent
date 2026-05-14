@@ -1,0 +1,145 @@
+# kube-prometheus-stack values - contract-agent
+# helm upgrade --install kps prometheus-community/kube-prometheus-stack \
+#   -n monitoring -f k8s/monitoring/values.yaml
+
+fullnameOverride: kps
+
+# 让 Prometheus Operator 监听整个集群所有 namespace 的 ServiceMonitor / PrometheusRule，
+# 这样 contract-agent namespace 下的 ServiceMonitor 才能被自动选中。
+prometheus:
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeConfigSelectorNilUsesHelmValues: false
+
+    retention: 15d
+    retentionSize: "18GB"
+
+    resources:
+      requests:
+        cpu: 200m
+        memory: 1Gi
+      limits:
+        cpu: "1"
+        memory: 2Gi
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi
+
+    additionalScrapeConfigs: []
+
+alertmanager:
+  alertmanagerSpec:
+    retention: 120h
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+    storage:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 2Gi
+
+  # 占位路由：上线时把这里替换成真实接收方（Webhook / 钉钉 / 邮件 / PagerDuty）
+  config:
+    route:
+      receiver: 'null'
+      group_by: ['alertname', 'namespace']
+      routes:
+        - matchers:
+            - severity = "critical"
+          receiver: 'null'
+    receivers:
+      - name: 'null'
+
+grafana:
+  enabled: true
+  adminPassword: "" # 留空 => 由 chart 随机生成（用 kubectl 取，见 README）
+  defaultDashboardsTimezone: Asia/Shanghai
+
+  persistence:
+    enabled: true
+    size: 5Gi
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # 让 Grafana sidecar 自动加载带特定 label 的 ConfigMap 当作 dashboard
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+      folder: /tmp/dashboards
+      provider:
+        foldersFromFilesStructure: true
+    datasources:
+      enabled: true
+
+  service:
+    type: ClusterIP
+
+# 集群组件采集（保持默认即可，足以覆盖 Node / kube-state-metrics / kubelet / cAdvisor）
+kubeApiServer:
+  enabled: true
+kubelet:
+  enabled: true
+kubeControllerManager:
+  enabled: true
+kubeScheduler:
+  enabled: true
+kubeProxy:
+  enabled: true
+kubeEtcd:
+  enabled: true
+coreDns:
+  enabled: true
+
+nodeExporter:
+  # Docker Desktop 上挂宿主 / 会失败（VM 内 / 不是 shared mount），且即便起来也读不到 Windows 宿主指标。
+  # 真上 K8s 集群时改回 true。
+  enabled: false
+kubeStateMetrics:
+  enabled: true
+
+defaultRules:
+  create: true
+  rules:
+    etcd: true
+    kubeApiserver: true
+    kubeApiserverAvailability: true
+    kubeApiserverError: true
+    kubeApiserverSlos: true
+    kubelet: true
+    kubeProxy: true
+    kubePrometheusGeneral: true
+    kubePrometheusNodeRecording: true
+    kubernetesApps: true
+    kubernetesResources: true
+    kubernetesStorage: true
+    kubernetesSystem: true
+    network: true
+    node: true
+    nodeExporterAlerting: true
+    nodeExporterRecording: true
+    prometheus: true
+    prometheusOperator: true

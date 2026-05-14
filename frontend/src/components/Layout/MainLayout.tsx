@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { Avatar, Dropdown, Layout, Menu, Space, Typography, theme } from 'antd';
+import { Avatar, Dropdown, Layout, Menu, Space, Typography, message, theme } from 'antd';
 import {
   DashboardOutlined,
   FileProtectOutlined,
@@ -88,6 +88,8 @@ const MainLayout: React.FC = () => {
       if (key === 'logout') {
         auth.logout();
         navigate('/login', { replace: true });
+      } else if (key === 'profile') {
+        message.info('个人设置功能开发中');
       }
     },
   };
@@ -111,9 +113,7 @@ const MainLayout: React.FC = () => {
       </Sider>
       <Layout>
         <Header className="app-header" style={{ background: colorBgContainer }}>
-          <Typography.Text strong style={{ fontSize: 16 }}>
-            合同合规智能 Agent 系统
-          </Typography.Text>
+          <span />
           <Dropdown menu={userMenu}>
             <Space style={{ cursor: 'pointer' }}>
               <Avatar size="small" icon={<UserOutlined />} />

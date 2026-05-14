@@ -1,0 +1,37 @@
+# 让 Prometheus Operator 抓 contract-agent backend 的 /metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: contract-agent-backend
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: contract-agent
+    app.kubernetes.io/component: backend
+    release: kps   # 与 kube-prometheus-stack 默认 selector 对齐（不强依赖，但加上无害）
+spec:
+  namespaceSelector:
+    matchNames:
+      - contract-agent
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: contract-agent
+      app.kubernetes.io/component: backend
+  endpoints:
+    - port: http             # 对应 k8s/local/50-app.yaml 中 backend Service port name=http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      honorLabels: true
+      # 把 job label 固定为 contract-agent-backend
+      # 默认 prometheus-operator 用 Service 名 (backend) 作 job，与告警规则/dashboard 中
+      # 的 job="contract-agent-backend" 对不上。
+      relabelings:
+        - action: replace
+          targetLabel: job
+          replacement: contract-agent-backend
+      # 把可能干扰聚合的 path label 高基数项关掉一些（按需）
+      metricRelabelings:
+        # 丢弃 /docs /openapi.json 这类带噪声的 path
+        - sourceLabels: [__name__, path]
+          regex: 'contract_agent_.*;/(docs|redoc|openapi\.json|metrics|health|ready).*'
+          action: drop

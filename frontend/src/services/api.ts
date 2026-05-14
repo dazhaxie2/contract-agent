@@ -117,15 +117,33 @@ export interface ModelConfig {
   id: string;
   name: string;
   display_name: string;
+  description?: string;
+  model_type: 'generation' | 'embedding' | 'reranker' | 'light';
   provider: 'aliyun' | 'openai' | 'local' | 'vllm';
   model_id: string;
   temperature: number;
   top_p: number;
   max_tokens: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  stop_sequences?: string[];
   context_window: number;
+  supports_function_calling?: boolean;
+  supports_streaming?: boolean;
   timeout_seconds: number;
+  max_retries?: number;
   max_concurrent_requests: number;
+  requests_per_minute?: number;
   api_endpoint: string;
+  extra_headers?: Record<string, unknown>;
+  extra_config?: Record<string, unknown>;
+  is_active?: boolean;
+  is_default?: boolean;
+  version?: number;
+  avg_latency_ms?: number | null;
+  avg_tokens_per_second?: number | null;
+  error_rate?: number | null;
+  quality_score?: number | null;
   status?: 'active' | 'inactive' | 'error';
   created_at: string;
   updated_at: string;
@@ -144,14 +162,22 @@ export interface DeploymentInfo {
   id: string;
   model_id: string;
   model_name: string;
-  status: 'running' | 'stopped' | 'deploying' | 'error';
+  deployment_type: 'cloud_api' | 'vllm' | 'triton' | 'onnx' | string;
+  endpoint_url?: string;
+  status: 'pending' | 'running' | 'stopped' | 'deploying' | 'failed' | 'unknown';
+  health_status?: string;
   gpu_type: string;
   gpu_count: number;
   replicas: number;
   ready_replicas: number;
-  cpu_usage: number;
-  memory_usage: number;
+  current_qps: number;
+  max_qps: number;
+  avg_latency_ms: number;
+  p99_latency_ms: number;
+  cpu_usage: number | null;
+  memory_usage: number | null;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface ABTest {
@@ -182,18 +208,35 @@ export interface ABTest {
 }
 
 function mapDeployment(item: Record<string, unknown>): DeploymentInfo {
+  const status = (item.status as DeploymentInfo['status']) || 'unknown';
+  const healthStatus = String(item.health_status || '');
+  const replicas = Number(item.replicas || 1);
+  const readyReplicas =
+    item.ready_replicas === null || item.ready_replicas === undefined
+      ? status === 'running' && healthStatus === 'healthy'
+        ? replicas
+        : 0
+      : Number(item.ready_replicas);
   return {
     id: String(item.id || ''),
     model_id: String(item.model_config_id || item.model_id || ''),
     model_name: String(item.deployment_name || item.model_name || ''),
-    status: (item.status as DeploymentInfo['status']) || 'running',
+    deployment_type: String(item.deployment_type || 'cloud_api'),
+    endpoint_url: item.endpoint_url ? String(item.endpoint_url) : undefined,
+    status,
+    health_status: healthStatus || undefined,
     gpu_type: String(item.gpu_type || ''),
     gpu_count: Number(item.gpu_count || 0),
-    replicas: Number(item.replicas || 1),
-    ready_replicas: Number(item.ready_replicas || item.replicas || 1),
-    cpu_usage: Number(item.cpu_usage || 0),
-    memory_usage: Number(item.memory_usage || 0),
+    replicas,
+    ready_replicas: readyReplicas,
+    current_qps: Number(item.current_qps || 0),
+    max_qps: Number(item.max_qps || 0),
+    avg_latency_ms: Number(item.avg_latency_ms || 0),
+    p99_latency_ms: Number(item.p99_latency_ms || 0),
+    cpu_usage: item.cpu_usage === null || item.cpu_usage === undefined ? null : Number(item.cpu_usage),
+    memory_usage: item.memory_usage === null || item.memory_usage === undefined ? null : Number(item.memory_usage),
     created_at: String(item.created_at || ''),
+    updated_at: item.updated_at ? String(item.updated_at) : undefined,
   };
 }
 

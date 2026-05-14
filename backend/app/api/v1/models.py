@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_read_db, get_write_db
 from app.core.request_context import RequestContext, resolve_request_context
+from app.models.agent import AgentExecution
 from app.models.model_config import ABTest, ModelConfig, ModelDeployment
 from app.schemas.common import PageResponse
 from app.schemas.model_config import (
@@ -122,6 +123,129 @@ def _ab_test_response(row: ABTest) -> ABTestResponse:
         ended_at=row.ended_at,
         created_at=row.created_at,
     )
+
+
+def _period_window(period: str) -> tuple[datetime, int]:
+    now = datetime.now(timezone.utc)
+    normalized = (period or "24h").lower()
+    if normalized in {"1h", "hour"}:
+        return now - timedelta(hours=1), 12
+    if normalized in {"7d", "week"}:
+        return now - timedelta(days=7), 7
+    if normalized in {"30d", "month"}:
+        return now - timedelta(days=30), 30
+    return now - timedelta(hours=24), 12
+
+
+def _bucket_values(values: list[float]) -> dict[str, float]:
+    if not values:
+        return {"p50": 0.0, "p99": 0.0, "avg": 0.0}
+    ordered = sorted(values)
+    p50 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.5))]
+    p99 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.99))]
+    return {
+        "p50": round(p50, 2),
+        "p99": round(p99, 2),
+        "avg": round(sum(ordered) / len(ordered), 2),
+    }
+
+
+def _execution_quality(row: AgentExecution) -> float | None:
+    scores = [score for score in [row.relevance_score, row.factuality_score] if score is not None]
+    if not scores:
+        evaluation = (row.result_metadata or {}).get("evaluation") or {}
+        if isinstance(evaluation, dict):
+            scores = [
+                float(value)
+                for key, value in evaluation.items()
+                if key in {"relevance", "factuality", "completeness", "clarity"} and value is not None
+            ]
+    return (sum(scores) / len(scores)) if scores else None
+
+
+async def _model_execution_rows(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    model_config_id: uuid.UUID,
+    since: datetime,
+) -> list[AgentExecution]:
+    rows = (
+        await db.scalars(
+            select(AgentExecution)
+            .where(
+                AgentExecution.tenant_id == tenant_id,
+                AgentExecution.model_config_id == model_config_id,
+                AgentExecution.created_at >= since,
+            )
+            .order_by(AgentExecution.created_at.asc())
+            .limit(10000)
+        )
+    ).all()
+    return list(rows)
+
+
+def _model_metrics_timeseries(rows: list[AgentExecution], *, since: datetime, bucket_count: int) -> dict[str, list]:
+    now = datetime.now(timezone.utc)
+    total_seconds = max(1.0, (now - since).total_seconds())
+    bucket_seconds = max(1.0, total_seconds / bucket_count)
+    buckets: list[list[AgentExecution]] = [[] for _ in range(bucket_count)]
+    for row in rows:
+        created_at = row.created_at
+        if created_at and created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        offset = max(0.0, ((created_at or now) - since).total_seconds())
+        index = min(bucket_count - 1, int(offset // bucket_seconds))
+        buckets[index].append(row)
+
+    timestamps: list[str] = []
+    latency_p50: list[float] = []
+    latency_p99: list[float] = []
+    qps: list[float] = []
+    error_rate: list[float] = []
+    quality_score: list[float] = []
+    for idx, bucket in enumerate(buckets):
+        timestamps.append((since + timedelta(seconds=bucket_seconds * idx)).isoformat())
+        latency = _bucket_values([float(item.generation_latency_ms or item.latency_ms or 0.0) for item in bucket])
+        latency_p50.append(latency["p50"])
+        latency_p99.append(latency["p99"])
+        qps.append(round(len(bucket) / bucket_seconds, 4))
+        error_rate.append(round(sum(1 for item in bucket if item.status == "failed") / len(bucket), 4) if bucket else 0.0)
+        qualities = [quality for item in bucket if (quality := _execution_quality(item)) is not None]
+        quality_score.append(round(sum(qualities) / len(qualities), 4) if qualities else 0.0)
+
+    return {
+        "timestamps": timestamps,
+        "latency_p50": latency_p50,
+        "latency_p99": latency_p99,
+        "qps": qps,
+        "error_rate": error_rate,
+        "quality_score": quality_score,
+    }
+
+
+def _model_metrics_summary(rows: list[AgentExecution]) -> dict[str, float]:
+    latencies = [float(row.generation_latency_ms or row.latency_ms or 0.0) for row in rows]
+    qualities = [quality for row in rows if (quality := _execution_quality(row)) is not None]
+    return {
+        "requests": len(rows),
+        "quality_score": round(sum(qualities) / len(qualities), 4) if qualities else 0.0,
+        "latency_ms": round(sum(latencies) / len(latencies), 2) if latencies else 0.0,
+        "error_rate": round(sum(1 for row in rows if row.status == "failed") / len(rows), 4) if rows else 0.0,
+    }
+
+
+def _select_winner(primary_metric: str, control: dict[str, float], treatment: dict[str, float]) -> str:
+    metric = primary_metric or "quality_score"
+    control_value = float(control.get(metric) or 0.0)
+    treatment_value = float(treatment.get(metric) or 0.0)
+    if metric in {"latency_ms", "error_rate"}:
+        if control_value == treatment_value:
+            return "inconclusive"
+        return "control" if control_value < treatment_value else "treatment"
+    if control_value == treatment_value:
+        return "inconclusive"
+    return "control" if control_value > treatment_value else "treatment"
 
 
 @router.get("/deployments", response_model=list[ModelDeploymentResponse])
@@ -259,10 +383,32 @@ async def stop_ab_test(
     if not row:
         raise HTTPException(status_code=404, detail="ab test not found")
 
+    now = datetime.now(timezone.utc)
+    since = row.started_at or (now - timedelta(days=7))
+    control_rows = await _model_execution_rows(
+        db,
+        tenant_id=ctx.tenant_id,
+        model_config_id=row.control_config_id,
+        since=since,
+    )
+    treatment_rows = await _model_execution_rows(
+        db,
+        tenant_id=ctx.tenant_id,
+        model_config_id=row.treatment_config_id,
+        since=since,
+    )
+    row.control_metrics = _model_metrics_summary(control_rows)
+    row.treatment_metrics = _model_metrics_summary(treatment_rows)
+    row.winner = _select_winner(row.primary_metric, row.control_metrics, row.treatment_metrics)
     row.status = "completed"
-    row.ended_at = datetime.now(timezone.utc)
+    row.ended_at = now
     await db.flush()
-    return {"message": "ab test stopped"}
+    return {
+        "message": "ab test stopped",
+        "winner": row.winner,
+        "control_metrics": row.control_metrics,
+        "treatment_metrics": row.treatment_metrics,
+    }
 
 
 @router.get("", response_model=PageResponse[ModelConfigResponse])
@@ -496,30 +642,17 @@ async def get_model_metrics_compat(
 
     _set_compat_headers(response, "/api/v1/models/deployments")
 
-    point_count = 12 if period in {"24h", "day"} else 7
-    now = datetime.now(timezone.utc)
-    timestamps = [
-        (now - timedelta(hours=(point_count - idx - 1) * 2)).isoformat()
-        for idx in range(point_count)
-    ]
-
-    base_latency = float(row.avg_latency_ms or 120.0)
-    base_error = float(row.error_rate or 0.0)
-    base_quality = float(row.quality_score or 0.0)
-    lat_p50 = [round(base_latency * (0.95 + (idx % 3) * 0.03), 2) for idx in range(point_count)]
-    lat_p99 = [round(v * 1.8, 2) for v in lat_p50]
-    qps = [round(10 + idx * 1.5, 2) for idx in range(point_count)]
-    error_rate = [round(max(0.0, base_error), 4) for _ in range(point_count)]
-    quality = [round(max(0.0, base_quality), 4) for _ in range(point_count)]
-
-    return {
-        "timestamps": timestamps,
-        "latency_p50": lat_p50,
-        "latency_p99": lat_p99,
-        "qps": qps,
-        "error_rate": error_rate,
-        "quality_score": quality,
-    }
+    since, bucket_count = _period_window(period)
+    rows = await _model_execution_rows(
+        db,
+        tenant_id=ctx.tenant_id,
+        model_config_id=row.id,
+        since=since,
+    )
+    payload = _model_metrics_timeseries(rows, since=since, bucket_count=bucket_count)
+    payload["sample_count"] = len(rows)
+    payload["source"] = "agent_executions"
+    return payload
 
 
 @router.post("/{config_id}/deploy")
@@ -554,8 +687,8 @@ async def deploy_model_compat(
         gpu_count=int(payload.get("gpu_count") or 0),
         cpu_limit=payload.get("cpu_limit"),
         memory_limit=payload.get("memory_limit"),
-        status="running",
-        health_status="healthy",
+        status="pending",
+        health_status="unknown",
         current_qps=0.0,
         max_qps=float(payload.get("max_qps") or 0.0),
         avg_latency_ms=0.0,
@@ -577,9 +710,9 @@ async def deploy_model_compat(
         "gpu_type": deployment.gpu_type or "",
         "gpu_count": deployment.gpu_count,
         "replicas": deployment.replicas,
-        "ready_replicas": deployment.replicas,
-        "cpu_usage": 0.0,
-        "memory_usage": 0.0,
+        "ready_replicas": deployment.replicas if deployment.status == "running" and deployment.health_status == "healthy" else 0,
+        "cpu_usage": None,
+        "memory_usage": None,
         "created_at": deployment.created_at.isoformat(),
     }
 

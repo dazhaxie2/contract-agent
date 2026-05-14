@@ -1,4 +1,4 @@
-import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
+import axios, { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 import { message } from 'antd';
 
 const api = axios.create({
@@ -25,7 +25,19 @@ api.interceptors.request.use(
 );
 
 api.interceptors.response.use(
-  (response) => response,
+  (response: AxiosResponse) => {
+    const payload = response.data as { code?: number; data?: unknown; message?: string } | undefined;
+    if (
+      payload &&
+      typeof payload === 'object' &&
+      'code' in payload &&
+      'data' in payload &&
+      'message' in payload
+    ) {
+      response.data = payload.data;
+    }
+    return response;
+  },
   (error: AxiosError<{ detail?: string }>) => {
     if (error.response) {
       const { status, data } = error.response;
@@ -234,6 +246,8 @@ export interface PromptVariable {
 export interface PromptTemplate {
   id: string;
   name: string;
+  display_name: string;
+  description: string;
   category: 'system' | 'task' | 'dynamic' | 'evaluation';
   status: 'draft' | 'published' | 'deprecated';
   tags: string[];
@@ -241,21 +255,26 @@ export interface PromptTemplate {
   user_prompt_template: string;
   variables: PromptVariable[];
   output_format: 'json' | 'markdown' | 'text';
-  validation_rules: string[];
-  version: number;
+  validation_rules: unknown[];
+  current_version: number;
   usage_count: number;
+  avg_quality_score?: number | null;
   created_at: string;
   updated_at: string;
 }
 
 export interface PromptVersion {
+  id?: string;
+  template_id?: string;
   version: number;
   system_prompt: string;
   user_prompt_template: string;
   variables: PromptVariable[];
-  change_log: string;
+  change_log?: string;
+  changelog?: string;
+  output_format?: string;
   created_at: string;
-  author: string;
+  author?: string;
 }
 
 export interface PromptTestResult {
@@ -295,6 +314,209 @@ export const promptApi = {
       return (await api.post<PromptTestResult>(`/prompts/${id}/test`, { variables })).data;
     }
   },
+};
+
+// ===================== Auth APIs =====================
+
+export interface LoginResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+}
+
+export const authApi = {
+  login: async (username: string, password: string) =>
+    (await api.post<LoginResponse>('/auth/login', { username, password })).data,
+};
+
+// ===================== Document APIs =====================
+
+export interface DocumentItem {
+  id: string;
+  tenant_id: string;
+  title: string;
+  doc_type: string;
+  file_name: string;
+  file_size: number;
+  file_hash: string;
+  mime_type: string;
+  issuing_authority?: string;
+  effective_date?: string;
+  expiry_date?: string;
+  applicable_industry: string[];
+  applicable_region: string[];
+  version?: string;
+  keywords: string[];
+  metadata: Record<string, unknown>;
+  status: string;
+  is_effective: boolean;
+  chunk_count: number;
+  process_error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IngestionJob {
+  job_id: string;
+  tenant_id: string;
+  status: 'queued' | 'processing' | 'completed' | 'failed' | string;
+  stage: string;
+  file_name: string;
+  doc_id?: string;
+  doc_type: string;
+  title?: string;
+  error_message?: string;
+  retry_count: number;
+  dead_letter: boolean;
+  events?: { stage: string; status: string; detail: Record<string, unknown>; created_at: string }[];
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+  updated_at: string;
+}
+
+export interface DocumentChunk {
+  id: string;
+  doc_id: string;
+  content: string;
+  summary?: string;
+  chunk_type: string;
+  hierarchy_path?: string;
+  hierarchy_level: number;
+  chunk_index: number;
+  token_count: number;
+  legal_priority: number;
+  entity_tags: string[];
+  vector_status: string;
+  graph_status: string;
+  created_at: string;
+}
+
+export const documentApi = {
+  upload: async (file: File, params: { title?: string; doc_type?: string; sync?: boolean }) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('title', params.title || file.name);
+    form.append('doc_type', params.doc_type || 'contract');
+    form.append('sync', String(params.sync ?? false));
+    return (
+      await api.post<IngestionJob>('/documents/upload', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+    ).data;
+  },
+  list: async (params?: Record<string, unknown>) => {
+    const response = await api.get<PageResult<DocumentItem>>('/documents', { params });
+    return normalizePageResult<DocumentItem>(
+      response.data,
+      Number(params?.page || 1),
+      Number(params?.page_size || 20),
+    );
+  },
+  get: async (id: string) => (await api.get<DocumentItem>(`/documents/${id}`)).data,
+  getChunks: async (id: string, full = false) =>
+    (await api.get<DocumentChunk[]>(`/documents/${id}/chunks`, { params: { full } })).data,
+  getJob: async (jobId: string) => (await api.get<IngestionJob>(`/documents/jobs/${jobId}`)).data,
+  delete: async (id: string) => (await api.delete(`/documents/${id}`)).data,
+};
+
+// ===================== Review / Agent APIs =====================
+
+export interface ReviewRiskItem {
+  severity: 'high' | 'medium' | 'low' | 'uncertain' | string;
+  clause_excerpt: string;
+  issue: string;
+  legal_basis: string;
+  recommendation: string;
+  confidence: number;
+  references?: {
+    ref_id?: number;
+    citation_id?: string;
+    citation_code?: string;
+    doc_title?: string;
+    hierarchy?: string;
+    chunk_id?: string;
+  }[];
+}
+
+export interface ReviewReport {
+  overall_risk: 'high' | 'medium' | 'low' | 'uncertain' | string;
+  summary: string;
+  risk_items: ReviewRiskItem[];
+  generated_from?: string;
+}
+
+export interface AgentExecution {
+  execution_id?: string;
+  id?: string;
+  trace_id: string;
+  status: string;
+  result: string;
+  references: Record<string, unknown>[];
+  review_report?: ReviewReport;
+  usage: Record<string, unknown>;
+  latency_ms: number;
+  task_type?: string;
+  created_at?: string;
+  completed_at?: string;
+}
+
+export interface SessionInfo {
+  id: string;
+  tenant_id: string;
+  user_id: string;
+  title: string;
+  status: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CitationDetail {
+  id: string;
+  citation_code: string;
+  tenant_id: string;
+  session_id?: string;
+  execution_id?: string;
+  document_id?: string;
+  chunk_id?: string;
+  source_type: string;
+  title?: string;
+  excerpt: string;
+  locator?: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export const sessionApi = {
+  create: async (title: string, metadata: Record<string, unknown> = {}) =>
+    (await api.post<SessionInfo>('/sessions', { title, metadata })).data,
+};
+
+export const agentApi = {
+  execute: async (payload: {
+    query: string;
+    task_type: string;
+    session_id: string;
+    tenant_id: string;
+    filters?: Record<string, unknown>;
+  }) => (await api.post<AgentExecution>('/agents/execute', payload)).data,
+  listExecutions: async (params?: Record<string, unknown>) => {
+    const response = await api.get<PageResult<AgentExecution>>('/agents/executions', { params });
+    return normalizePageResult<AgentExecution>(
+      response.data,
+      Number(params?.page || 1),
+      Number(params?.page_size || 20),
+    );
+  },
+  getExecution: async (id: string) => (await api.get<AgentExecution>(`/agents/executions/${id}`)).data,
+  submitFeedback: async (id: string, score: number, comment = '') =>
+    (await api.post(`/agents/executions/${id}/feedback`, null, { params: { score, comment } })).data,
+};
+
+export const citationApi = {
+  get: async (id: string) => (await api.get<CitationDetail>(`/citations/${id}`)).data,
 };
 
 // ===================== Dashboard APIs =====================

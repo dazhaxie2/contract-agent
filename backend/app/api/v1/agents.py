@@ -5,13 +5,14 @@ from __future__ import annotations
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.master_agent import master_agent
+from app.agents.orchestrator import orchestrator_agent
 from app.core.database import get_read_db, get_write_db
 from app.core.request_context import RequestContext, resolve_request_context
 from app.models.agent import AgentExecution, AgentStep
@@ -61,12 +62,72 @@ def _execution_payload(execution: AgentExecution, steps: list[dict] | None = Non
         "status": execution.status,
         "result": execution.result or "",
         "references": metadata.get("references", []),
+        "review_report": metadata.get("review_report"),
         "steps": steps or [],
         "usage": usage,
         "latency_ms": round(float(execution.latency_ms or 0.0), 2),
         "task_type": execution.task_type,
         "created_at": execution.created_at,
         "completed_at": execution.completed_at,
+    }
+
+
+def _severity_from_text(text: str) -> str:
+    lowered = text.lower()
+    if any(marker in text for marker in ["高风�?, "严重", "重大"]) or any(
+        marker in lowered for marker in ["high risk", "critical", "severe"]
+    ):
+        return "high"
+    if any(marker in text for marker in ["低风�?, "轻微"]) or any(marker in lowered for marker in ["low risk", "minor"]):
+        return "low"
+    return "medium"
+
+
+def _first_sentence(text: str, limit: int = 360) -> str:
+    normalized = " ".join((text or "").strip().split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[:limit].rstrip() + "..."
+
+
+def _build_contract_review_report(result_text: str, references: list[dict], query: str) -> dict[str, Any]:
+    citation_refs = [
+        {
+            "ref_id": ref.get("ref_id"),
+            "citation_id": ref.get("citation_id"),
+            "citation_code": ref.get("citation_code"),
+            "doc_title": ref.get("doc_title"),
+            "hierarchy": ref.get("hierarchy"),
+            "chunk_id": ref.get("chunk_id"),
+        }
+        for ref in references
+        if ref.get("citation_id") or ref.get("citation_code")
+    ]
+    has_citation = bool(citation_refs)
+    severity = _severity_from_text(result_text)
+    confidence = 0.72 if has_citation else 0.35
+    risk_title = "合同审查结论" if has_citation else "不确定：缺少可追溯依�?
+
+    return {
+        "overall_risk": severity if has_citation else "uncertain",
+        "summary": _first_sentence(result_text, limit=500) or "未生成有效审查结论�?,
+        "risk_items": [
+            {
+                "severity": severity if has_citation else "uncertain",
+                "clause_excerpt": _first_sentence(query, limit=320),
+                "issue": risk_title,
+                "legal_basis": "�?.join(
+                    str(item.get("citation_code") or item.get("doc_title") or item.get("chunk_id"))
+                    for item in citation_refs[:5]
+                )
+                or "未检索到可验证引用依�?,
+                "recommendation": _first_sentence(result_text, limit=600)
+                or "建议补充法规依据后再形成正式审查意见�?,
+                "confidence": confidence,
+                "references": citation_refs[:8],
+            }
+        ],
+        "generated_from": "agent_execution",
     }
 
 
@@ -178,6 +239,7 @@ async def execute_agent(
         tenant_id=ctx.tenant_id,
     )
     agent_context = {
+        "tenant_id": ctx.tenant_id,
         "retrieval_context": built_context["context"],
         "references": built_context["references"],
         "conversation_history": memory_ctx["history_text"],
@@ -186,10 +248,13 @@ async def execute_agent(
     }
 
     generation_start = time.perf_counter()
-    result = await master_agent.execute(req.query, context=agent_context)
+    result = await orchestrator_agent.execute(req.query, context=agent_context)
     generation_latency_ms = (time.perf_counter() - generation_start) * 1000
     latency_ms = (time.perf_counter() - start_time) * 1000
     completed_at = datetime.now(timezone.utc)
+    review_report = None
+    if req.task_type == "contract_review":
+        review_report = _build_contract_review_report(result.output or "", built_context["references"], req.query)
 
     execution = AgentExecution(
         id=execution_id,
@@ -201,7 +266,7 @@ async def execute_agent(
         user_query=req.query,
         parsed_intent=(retrieval_debug.get("preprocessed") or {}).get("intent"),
         parsed_entities=(retrieval_debug.get("preprocessed") or {}).get("entities", []),
-        agent_type=master_agent.agent_type,
+        agent_type=orchestrator_agent.agent_type,
         model_config_id=req.model_config_id,
         prompt_template_id=req.prompt_template_id,
         total_steps=len(result.steps),
@@ -211,6 +276,7 @@ async def execute_agent(
         result=result.output,
         result_metadata={
             "references": built_context["references"],
+            "review_report": review_report,
             "usage": {
                 "total_tokens": result.total_tokens,
                 "retrieval_chunks": built_context["chunk_count"],
@@ -261,7 +327,7 @@ async def execute_agent(
                 parent_span_id=None,
                 step_number=idx + 1,
                 step_type=step.step_type.value,
-                agent_type=master_agent.agent_type,
+                agent_type=orchestrator_agent.agent_type,
                 thought=step.content if step.step_type.value == "thought" else None,
                 action=step.action,
                 action_input=step.action_input or {},
@@ -323,6 +389,7 @@ async def execute_agent(
             "retrieval_latency_ms": retrieval_debug.get("latency_ms", 0.0),
         },
         latency_ms=round(latency_ms, 2),
+        review_report=review_report,
     )
 
 
@@ -364,7 +431,16 @@ async def chat_stream(
         tenant_id=ctx.tenant_id,
     )
 
-    messages = [{"role": "system", "content": master_agent._build_system_prompt()}]
+    retrieval_results, _retrieval_debug = await hybrid_retriever.retrieve_with_debug(
+        query=req.query,
+        tenant_id=ctx.tenant_id,
+        filters=req.filters,
+    )
+    built_context = context_builder.build(retrieval_results)
+
+    messages = [{"role": "system", "content": orchestrator_agent._build_system_prompt()}]
+    if built_context["context"]:
+        messages.append({"role": "system", "content": f"Retrieval context:\n{built_context['context']}"})
     if memory_ctx["summary"]:
         messages.append({"role": "system", "content": f"Session summary:\n{memory_ctx['summary']}"})
     if memory_ctx["history_text"]:
@@ -375,7 +451,7 @@ async def chat_stream(
         chunks: list[str] = []
         async for chunk in llm_service.generate_stream(messages):
             chunks.append(chunk)
-            yield f"data: {chunk}\n\n"
+            yield f"data: {json.dumps({'type': 'content', 'text': chunk}, ensure_ascii=False)}\n\n"
 
         final_text = "".join(chunks).strip()
         if final_text:
@@ -387,13 +463,16 @@ async def chat_stream(
                 content=final_text,
                 user_id=ctx.user_uuid,
                 trace_id=trace_id,
-                metadata={"stream": True},
+                metadata={"stream": True, "references": built_context["references"][:10]},
             )
             await session_memory_service.refresh_rolling_summary(
                 db=db,
                 session_id=req.session_id,
                 tenant_id=ctx.tenant_id,
             )
+
+        refs_data = json.dumps({"type": "references", "data": built_context["references"][:10]}, ensure_ascii=False)
+        yield f"data: {refs_data}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -516,3 +595,4 @@ async def submit_feedback(
     execution.result_metadata = metadata
     await db.flush()
     return {"message": "feedback submitted"}
+

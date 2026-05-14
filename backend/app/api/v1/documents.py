@@ -58,13 +58,13 @@ def _serialize_document(doc: Document) -> dict:
     }
 
 
-def _serialize_chunk(chunk: DocumentChunk) -> dict:
+def _serialize_chunk(chunk: DocumentChunk, *, full: bool = False) -> dict:
     text = chunk.content or ""
     return {
         "id": str(chunk.id),
         "doc_id": str(chunk.doc_id),
         "tenant_id": chunk.tenant_id,
-        "content": text[:200] + "..." if len(text) > 200 else text,
+        "content": text if full else (text[:200] + "..." if len(text) > 200 else text),
         "summary": chunk.summary,
         "chunk_type": chunk.chunk_type,
         "hierarchy_path": chunk.hierarchy_path,
@@ -254,6 +254,7 @@ async def get_document(
 @router.get("/{doc_id}/chunks")
 async def get_document_chunks(
     doc_id: str,
+    full: bool = Query(default=False),
     db: AsyncSession = Depends(get_read_db),
     ctx: RequestContext = Depends(get_request_context),
 ):
@@ -269,7 +270,7 @@ async def get_document_chunks(
             .order_by(DocumentChunk.chunk_index.asc())
         )
     ).all()
-    return [_serialize_chunk(row) for row in rows]
+    return [_serialize_chunk(row, full=full) for row in rows]
 
 
 @router.delete("/{doc_id}")

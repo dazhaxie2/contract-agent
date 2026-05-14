@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
@@ -38,6 +39,45 @@ def _similarity(a: str, b: str) -> float:
     if not a or not b:
         return 0.0
     return SequenceMatcher(None, a[:300], b[:300]).ratio()
+
+
+def _document_filter_ids(filters: dict) -> list[uuid.UUID]:
+    raw_ids: list[object] = []
+    if filters.get("doc_id"):
+        raw_ids.append(filters["doc_id"])
+    if filters.get("document_ids"):
+        value = filters["document_ids"]
+        if isinstance(value, (list, tuple, set)):
+            raw_ids.extend(value)
+        else:
+            raw_ids.append(value)
+
+    doc_ids: list[uuid.UUID] = []
+    for raw in raw_ids:
+        if isinstance(raw, uuid.UUID):
+            doc_ids.append(raw)
+            continue
+        if not isinstance(raw, str):
+            continue
+        try:
+            doc_ids.append(uuid.UUID(raw))
+        except ValueError:
+            continue
+    return doc_ids
+
+
+def _uuid_values(values: list[object]) -> list[uuid.UUID]:
+    parsed: list[uuid.UUID] = []
+    for value in values:
+        if isinstance(value, uuid.UUID):
+            parsed.append(value)
+            continue
+        if isinstance(value, str):
+            try:
+                parsed.append(uuid.UUID(value))
+            except ValueError:
+                continue
+    return parsed
 
 
 def _rrf_merge(sources: list[list["RetrievalResult"]], k: int = 60) -> list["RetrievalResult"]:
@@ -205,9 +245,10 @@ class HybridRetriever:
     def _base_where(self, tenant_id: str, filters: dict) -> list[Any]:
         where_clauses: list[Any] = [
             DocumentChunk.tenant_id == tenant_id,
-            DocumentChunk.vector_status == "ready",
-            DocumentChunk.graph_status == "ready",
         ]
+        doc_ids = _document_filter_ids(filters)
+        if filters.get("doc_id") or filters.get("document_ids"):
+            where_clauses.append(Document.id.in_(doc_ids or [uuid.uuid4()]))
         if filters.get("doc_type"):
             where_clauses.append(Document.doc_type == filters["doc_type"])
         if filters.get("effective") is True:
@@ -291,7 +332,8 @@ class HybridRetriever:
             vector_hits = []
 
         chunk_ids = [item["chunk_id"] for item in vector_hits if item.get("chunk_id")]
-        if not chunk_ids:
+        chunk_uuids = _uuid_values(chunk_ids)
+        if not chunk_uuids:
             return []
 
         async with get_read_session() as db:
@@ -301,7 +343,7 @@ class HybridRetriever:
                     .join(Document, Document.id == DocumentChunk.doc_id)
                     .where(
                         and_(*self._base_where(tenant_id, filters)),
-                        DocumentChunk.id.in_(chunk_ids),
+                        DocumentChunk.id.in_(chunk_uuids),
                     )
                 )
             ).all()
@@ -356,7 +398,8 @@ class HybridRetriever:
             limit=max(settings.rag.graph_top_k * 4, 80),
         )
         chunk_ids = [str(item.get("chunk_id") or "") for item in graph_hits if item.get("chunk_id")]
-        if not chunk_ids:
+        chunk_uuids = _uuid_values(chunk_ids)
+        if not chunk_uuids:
             return []
 
         async with get_read_session() as db:
@@ -364,7 +407,7 @@ class HybridRetriever:
                 await db.execute(
                     select(DocumentChunk, Document)
                     .join(Document, Document.id == DocumentChunk.doc_id)
-                    .where(and_(*self._base_where(tenant_id, filters)), DocumentChunk.id.in_(chunk_ids))
+                    .where(and_(*self._base_where(tenant_id, filters)), DocumentChunk.id.in_(chunk_uuids))
                 )
             ).all()
 
@@ -432,7 +475,9 @@ class HybridRetriever:
     async def _attach_parent_context(self, results: list[RetrievalResult], tenant_id: str) -> list[RetrievalResult]:
         if not results:
             return results
-        chunk_ids = [item.chunk_id for item in results]
+        chunk_ids = _uuid_values([item.chunk_id for item in results])
+        if not chunk_ids:
+            return results
         async with get_read_session() as db:
             rows = (
                 await db.scalars(

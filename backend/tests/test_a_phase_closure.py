@@ -157,10 +157,10 @@ async def test_sessions_memory_documents_retrieval_and_citations(
         "/api/v1/agents/execute",
         json={
             "query": "review payment terms",
-            "task_type": "review",
+            "task_type": "contract_review",
             "session_id": session_id,
             "tenant_id": "default",
-            "filters": {},
+            "filters": {"doc_id": doc_id},
         },
         headers=auth_headers,
     )
@@ -168,6 +168,7 @@ async def test_sessions_memory_documents_retrieval_and_citations(
     exec_payload = unwrap_json(execute_resp)
     assert exec_payload["status"] == "completed"
     assert isinstance(exec_payload["references"], list)
+    assert exec_payload["review_report"]["risk_items"]
 
     messages_resp = await app_client.get(f"/api/v1/sessions/{session_id}/messages", headers=auth_headers)
     assert messages_resp.status_code == 200
@@ -192,6 +193,58 @@ async def test_sessions_memory_documents_retrieval_and_citations(
         if citation_id:
             citation_resp = await app_client.get(f"/api/v1/citations/{citation_id}", headers=auth_headers)
             assert citation_resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_document_chunks_full_and_retrieval_doc_filter(
+    app_client: AsyncClient, auth_headers: dict[str, str], monkeypatch
+) -> None:
+    monkeypatch.setattr(settings.rag, "enable_crag", False)
+
+    first_upload = await app_client.post(
+        "/api/v1/documents/upload",
+        files={
+            "file": (
+                "alpha.txt",
+                (b"alphaonly payment delivery clause with warranty obligation and acceptance standard. " * 4),
+                "text/plain",
+            )
+        },
+        data={"doc_type": "contract", "title": "Alpha Contract", "sync": "true"},
+        headers=auth_headers,
+    )
+    assert first_upload.status_code == 200, first_upload.text
+    first_doc_id = unwrap_json(first_upload)["doc_id"]
+
+    second_upload = await app_client.post(
+        "/api/v1/documents/upload",
+        files={
+            "file": (
+                "beta.txt",
+                (b"betaonly confidentiality renewal clause with data protection and notice period. " * 4),
+                "text/plain",
+            )
+        },
+        data={"doc_type": "contract", "title": "Beta Contract", "sync": "true"},
+        headers=auth_headers,
+    )
+    assert second_upload.status_code == 200, second_upload.text
+    second_doc_id = unwrap_json(second_upload)["doc_id"]
+
+    chunks_resp = await app_client.get(f"/api/v1/documents/{first_doc_id}/chunks?full=true", headers=auth_headers)
+    assert chunks_resp.status_code == 200
+    chunks = unwrap_json(chunks_resp)
+    assert chunks and "alphaonly payment delivery clause" in chunks[0]["content"]
+
+    filtered_resp = await app_client.post(
+        "/api/v1/retrieval/search",
+        json={"query": "betaonly", "tenant_id": "default", "filters": {"doc_id": second_doc_id}, "top_k": 5},
+        headers=auth_headers,
+    )
+    assert filtered_resp.status_code == 200, filtered_resp.text
+    filtered_payload = unwrap_json(filtered_resp)
+    assert filtered_payload["final_results"]
+    assert all(item["metadata"]["doc_id"] == second_doc_id for item in filtered_payload["final_results"])
 
 
 @pytest.mark.asyncio

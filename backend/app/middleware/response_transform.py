@@ -12,6 +12,13 @@ from starlette.responses import Response
 from app.middleware.request_id import get_request_id
 
 
+def _safe_headers(headers) -> dict:
+    copied = dict(headers)
+    copied.pop("content-length", None)
+    copied.pop("Content-Length", None)
+    return copied
+
+
 class ResponseTransformMiddleware(BaseHTTPMiddleware):
     """统一响应格式"""
 
@@ -46,7 +53,7 @@ class ResponseTransformMiddleware(BaseHTTPMiddleware):
             return Response(
                 content=body,
                 status_code=response.status_code,
-                headers=dict(response.headers),
+                headers=_safe_headers(response.headers),
                 media_type=response.media_type,
             )
 
@@ -55,7 +62,7 @@ class ResponseTransformMiddleware(BaseHTTPMiddleware):
             return Response(
                 content=body,
                 status_code=response.status_code,
-                headers=dict(response.headers),
+                headers=_safe_headers(response.headers),
                 media_type=response.media_type,
             )
 
@@ -76,9 +83,6 @@ class ResponseTransformMiddleware(BaseHTTPMiddleware):
         return Response(
             content=wrapped_body,
             status_code=response.status_code,
-            headers={
-                **dict(response.headers),
-                "Content-Length": str(len(wrapped_body.encode())),
-            },
+            headers=_safe_headers(response.headers),
             media_type="application/json",
         )

@@ -1,6 +1,10 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+
 import MainLayout from './components/Layout/MainLayout';
+import LoginPage from './pages/Auth/LoginPage';
+import ReviewWorkspace from './pages/Reviews/ReviewWorkspace';
+import DocumentLibrary from './pages/Documents/DocumentLibrary';
 import SystemDashboard from './pages/Dashboard/SystemDashboard';
 import AgentTraceDashboard from './pages/Dashboard/AgentTraceDashboard';
 import RetrievalDashboard from './pages/Dashboard/RetrievalDashboard';
@@ -14,36 +18,35 @@ import PromptEditor from './pages/PromptManager/PromptEditor';
 import PromptVersionHistory from './pages/PromptManager/PromptVersionHistory';
 import PromptTestPanel from './pages/PromptManager/PromptTestPanel';
 
-const App: React.FC = () => {
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<MainLayout />}>
-          <Route index element={<Navigate to="/dashboard" replace />} />
+const App: React.FC = () => (
+  <BrowserRouter>
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/" element={<MainLayout />}>
+        <Route index element={<Navigate to="/reviews" replace />} />
 
-          {/* 监控大盘 */}
-          <Route path="dashboard" element={<SystemDashboard />} />
-          <Route path="dashboard/agent-trace" element={<AgentTraceDashboard />} />
-          <Route path="dashboard/retrieval" element={<RetrievalDashboard />} />
+        <Route path="reviews" element={<ReviewWorkspace />} />
+        <Route path="documents" element={<DocumentLibrary />} />
 
-          {/* 模型配置 */}
-          <Route path="models" element={<ModelConfigList />} />
-          <Route path="models/create" element={<ModelConfigForm />} />
-          <Route path="models/:id/edit" element={<ModelConfigForm />} />
-          <Route path="models/:id" element={<ModelConfigDetail />} />
-          <Route path="models/deployment" element={<ModelDeployment />} />
-          <Route path="models/ab-test" element={<ABTestPanel />} />
+        <Route path="dashboard" element={<SystemDashboard />} />
+        <Route path="dashboard/agent-trace" element={<AgentTraceDashboard />} />
+        <Route path="dashboard/retrieval" element={<RetrievalDashboard />} />
 
-          {/* 提示词管理 */}
-          <Route path="prompts" element={<PromptList />} />
-          <Route path="prompts/create" element={<PromptEditor />} />
-          <Route path="prompts/:id/edit" element={<PromptEditor />} />
-          <Route path="prompts/:id/history" element={<PromptVersionHistory />} />
-          <Route path="prompts/test" element={<PromptTestPanel />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
-  );
-};
+        <Route path="models" element={<ModelConfigList />} />
+        <Route path="models/create" element={<ModelConfigForm />} />
+        <Route path="models/:id/edit" element={<ModelConfigForm />} />
+        <Route path="models/:id" element={<ModelConfigDetail />} />
+        <Route path="models/deployment" element={<ModelDeployment />} />
+        <Route path="models/ab-test" element={<ABTestPanel />} />
+
+        <Route path="prompts" element={<PromptList />} />
+        <Route path="prompts/create" element={<PromptEditor />} />
+        <Route path="prompts/:id/edit" element={<PromptEditor />} />
+        <Route path="prompts/:id/history" element={<PromptVersionHistory />} />
+        <Route path="prompts/test" element={<PromptTestPanel />} />
+      </Route>
+    </Routes>
+  </BrowserRouter>
+);
 
 export default App;

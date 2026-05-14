@@ -28,6 +28,7 @@ class AgentExecuteResponse(BaseModel):
     steps: list[dict] = Field(default_factory=list)
     usage: dict = Field(default_factory=dict)
     latency_ms: float
+    review_report: dict | None = None
 
 
 class AgentStepResponse(BaseModel):

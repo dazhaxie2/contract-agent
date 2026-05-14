@@ -55,6 +55,13 @@ class InMemoryIdempotencyStore:
 _memory_store = InMemoryIdempotencyStore()
 
 
+def _safe_headers(headers) -> dict:
+    copied = dict(headers)
+    copied.pop("content-length", None)
+    copied.pop("Content-Length", None)
+    return copied
+
+
 class IdempotencyMiddleware(BaseHTTPMiddleware):
     IDEMPOTENT_METHODS = {"POST", "PUT", "PATCH"}
     TTL_SECONDS = 3600
@@ -76,7 +83,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             response = Response(
                 content=replay["body"],
                 status_code=int(replay["status_code"]),
-                headers=replay["headers"],
+                headers=_safe_headers(replay["headers"]),
             )
             response.headers["X-Idempotency-Replay"] = "true"
             return response
@@ -103,7 +110,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 if isinstance(chunk, str):
                     chunk = chunk.encode("utf-8")
                 body += chunk
-            headers = dict(response.headers)
+            headers = _safe_headers(response.headers)
 
             await self._store_response(
                 redis,

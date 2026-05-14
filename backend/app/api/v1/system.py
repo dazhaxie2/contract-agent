@@ -5,6 +5,7 @@ from __future__ import annotations
 import statistics
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
@@ -39,6 +40,77 @@ def _latency_quantiles(values: list[float]) -> dict[str, float]:
         "p95_ms": round(p95, 2),
         "p99_ms": round(p99, 2),
         "avg_ms": round(statistics.mean(ordered), 2),
+    }
+
+
+def _ratio(part: int | float, total: int | float) -> float:
+    return round(float(part) / float(total), 4) if total else 0.0
+
+
+def _risk_items(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    report = metadata.get("review_report") or {}
+    items = report.get("risk_items") if isinstance(report, dict) else []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _has_citation(item: dict[str, Any]) -> bool:
+    refs = item.get("references") or []
+    if not isinstance(refs, list):
+        return False
+    return any(isinstance(ref, dict) and (ref.get("citation_id") or ref.get("citation_code")) for ref in refs)
+
+
+def _workbench_metrics(exec_rows: list[AgentExecution]) -> dict[str, Any]:
+    planned_rows = [row for row in exec_rows if (row.result_metadata or {}).get("decision_id")]
+    contract_rows = [row for row in exec_rows if row.task_type == "contract_review"]
+    plan_success = sum(1 for row in planned_rows if row.status == "completed")
+    review_failures = sum(1 for row in contract_rows if row.status == "failed")
+    review_latencies = [float(row.latency_ms or 0.0) for row in contract_rows if row.latency_ms is not None]
+    feedback_scores = [int(row.user_feedback) for row in exec_rows if row.user_feedback is not None]
+
+    tool_total = 0
+    tool_failed = 0
+    risk_total = 0
+    risk_with_citation = 0
+    low_confidence = 0
+    regression_cases = 0
+    for row in exec_rows:
+        metadata = row.result_metadata or {}
+        if metadata.get("regression_case_id"):
+            regression_cases += 1
+
+        tool_results = metadata.get("tool_results") or []
+        if isinstance(tool_results, list):
+            for item in tool_results:
+                if not isinstance(item, dict):
+                    continue
+                tool_total += 1
+                if item.get("status") == "failed" or item.get("error"):
+                    tool_failed += 1
+
+        for item in _risk_items(metadata):
+            risk_total += 1
+            if _has_citation(item):
+                risk_with_citation += 1
+            confidence = float(item.get("confidence") or 0.0)
+            if item.get("severity") == "uncertain" or confidence < 0.5:
+                low_confidence += 1
+
+    avg_review_latency = statistics.mean(review_latencies) if review_latencies else 0.0
+    avg_feedback = statistics.mean(feedback_scores) if feedback_scores else 0.0
+    return {
+        "plan_success_rate": _ratio(plan_success, len(planned_rows)),
+        "planned_executions": len(planned_rows),
+        "tool_failure_rate": _ratio(tool_failed, tool_total),
+        "tool_calls_total": tool_total,
+        "citation_coverage_rate": _ratio(risk_with_citation, risk_total),
+        "risk_items_total": risk_total,
+        "low_confidence_rate": _ratio(low_confidence, risk_total),
+        "user_feedback_avg": round(avg_feedback, 2),
+        "user_feedback_count": len(feedback_scores),
+        "contract_review_failure_rate": _ratio(review_failures, len(contract_rows)),
+        "contract_review_avg_latency_ms": round(avg_review_latency, 2),
+        "regression_cases_total": regression_cases,
     }
 
 
@@ -210,6 +282,15 @@ async def get_metrics_overview(db: AsyncSession = Depends(get_read_db)):
             )
             or 0.0
         )
+        metric_rows = (
+            await db.scalars(
+                select(AgentExecution)
+                .where(AgentExecution.created_at >= last_24h)
+                .order_by(AgentExecution.created_at.desc())
+                .limit(5000)
+            )
+        ).all()
+        workbench_payload = _workbench_metrics(list(metric_rows))
     except Exception:
         total_exec = 0
         exec_24h = 0
@@ -220,6 +301,7 @@ async def get_metrics_overview(db: AsyncSession = Depends(get_read_db)):
         latency_payload = _latency_quantiles([])
         total_tokens = 0
         llm_avg_latency = 0.0
+        workbench_payload = _workbench_metrics([])
 
     qps_current = round(exec_24h / 86400, 3)
     error_rate = round((error_24h / exec_24h), 4) if exec_24h else 0.0
@@ -270,6 +352,7 @@ async def get_metrics_overview(db: AsyncSession = Depends(get_read_db)):
             "executions_total": total_exec,
             "executions_24h": exec_24h,
         },
+        "contract_workbench": workbench_payload,
         "circuit_breakers": {
             name: get_circuit_breaker().get_state(name)
             for name in ["llm_service", "document_service", "retrieval_service", "graph_service"]

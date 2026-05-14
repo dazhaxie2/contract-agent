@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 
 from app.core.database import ReadSessionLocal
 from app.core.config import settings
+from app.models.agent import AgentExecution
 from app.services.connectors.legal_source_connector import LegalSourceDocument
 from app.services.llm_service import llm_service
 
@@ -111,6 +114,8 @@ async def test_prompts_crud_and_compat(app_client: AsyncClient, auth_headers: di
     assert compat_test_resp.headers.get("Deprecation") == "true"
     compat_data = unwrap_json(compat_test_resp)
     assert compat_data["output"] == "mock-output"
+    assert compat_data["trace_id"].startswith("prompt_")
+    assert compat_data["rendered_prompt"] == "Review: hello"
 
 
 @pytest.mark.asyncio
@@ -151,7 +156,7 @@ async def test_sessions_memory_documents_retrieval_and_citations(
         step = AgentStep(step_type=StepType.FINAL, content="done", tokens_used=12, latency_ms=1.0)
         return AgentResult(success=True, output="analysis complete", steps=[step], metadata={"mock": True})
 
-    monkeypatch.setattr("app.api.v1.agents.master_agent.execute", fake_agent_execute)
+    monkeypatch.setattr("app.api.v1.agents.orchestrator_agent.execute", fake_agent_execute)
 
     execute_resp = await app_client.post(
         "/api/v1/agents/execute",
@@ -193,6 +198,267 @@ async def test_sessions_memory_documents_retrieval_and_citations(
         if citation_id:
             citation_resp = await app_client.get(f"/api/v1/citations/{citation_id}", headers=auth_headers)
             assert citation_resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_agent_plan_confirm_execute_and_feedback_regression(
+    app_client: AsyncClient, auth_headers: dict[str, str], monkeypatch
+) -> None:
+    session_resp = await app_client.post(
+        "/api/v1/sessions",
+        json={"title": "Plan Confirm", "metadata": {}},
+        headers=auth_headers,
+    )
+    assert session_resp.status_code == 200, session_resp.text
+    session_id = unwrap_json(session_resp)["id"]
+
+    async with ReadSessionLocal() as session:
+        before_count = await session.scalar(select(func.count()).select_from(AgentExecution))
+
+    plan_resp = await app_client.post(
+        "/api/v1/agents/plan",
+        json={
+            "query": "帮我审这份采购合同，重点看付款、违约、解除，并生成修改建议",
+            "task_type": "contract_review",
+            "session_id": session_id,
+            "tenant_id": "default",
+            "context": {"review_type": "purchase"},
+            "filters": {},
+        },
+        headers=auth_headers,
+    )
+    assert plan_resp.status_code == 200, plan_resp.text
+    plan_payload = unwrap_json(plan_resp)
+    assert plan_payload["decision_id"].startswith("dec_")
+    assert plan_payload["requires_confirmation"] is True
+    assert [step["step_id"] for step in plan_payload["steps"]]
+    assert any(step["domain"] == "review" for step in plan_payload["steps"])
+
+    catalog_resp = await app_client.get("/api/v1/agents/tool-catalog", headers=auth_headers)
+    assert catalog_resp.status_code == 200
+    catalog_payload = unwrap_json(catalog_resp)
+    assert "contract" in catalog_payload["domains"]
+    assert any(item["name"] == "retrieval.search" for item in catalog_payload["domains"]["knowledge"])
+
+    extension_resp = await app_client.get("/api/v1/agents/workspace-extension-schema", headers=auth_headers)
+    assert extension_resp.status_code == 200
+    extension_payload = unwrap_json(extension_resp)
+    assert extension_payload["status"] == "reserved"
+    assert {"contract_matter", "performance_event", "expense_evidence"}.issubset(extension_payload["schemas"])
+
+    async with ReadSessionLocal() as session:
+        after_plan_count = await session.scalar(select(func.count()).select_from(AgentExecution))
+    assert after_plan_count == before_count
+
+    rejected_resp = await app_client.post(
+        f"/api/v1/agents/decisions/{plan_payload['decision_id']}/execute",
+        json={"confirmed": False, "comment": "not yet"},
+        headers=auth_headers,
+    )
+    assert rejected_resp.status_code == 409
+
+    async def fake_agent_execute(query: str, context: dict | None = None):
+        from app.agents.base import AgentResult, AgentStep, StepType
+
+        assert "采购合同" in query
+        step = AgentStep(
+            step_type=StepType.OBSERVATION,
+            content="review tool completed",
+            tool_name="compliance.review",
+            tokens_used=18,
+            latency_ms=2.0,
+        )
+        return AgentResult(success=True, output="中风险：付款期限需要补充验收条件。", steps=[step], metadata={"mock": True})
+
+    monkeypatch.setattr("app.api.v1.agents.orchestrator_agent.execute", fake_agent_execute)
+
+    execute_resp = await app_client.post(
+        f"/api/v1/agents/decisions/{plan_payload['decision_id']}/execute",
+        json={"confirmed": True, "comment": "confirmed"},
+        headers=auth_headers,
+    )
+    assert execute_resp.status_code == 200, execute_resp.text
+    execute_payload = unwrap_json(execute_resp)
+    assert execute_payload["status"] == "completed"
+    assert execute_payload["decision_id"] == plan_payload["decision_id"]
+    assert execute_payload["plan"]["steps"]
+    assert execute_payload["tool_results"]
+    assert execute_payload["review_report"]["risk_items"]
+
+    detail_resp = await app_client.get(
+        f"/api/v1/agents/executions/{execute_payload['execution_id']}",
+        headers=auth_headers,
+    )
+    assert detail_resp.status_code == 200
+    detail_payload = unwrap_json(detail_resp)
+    assert detail_payload["decision_id"] == plan_payload["decision_id"]
+    assert detail_payload["plan"]["decision_id"] == plan_payload["decision_id"]
+
+    feedback_resp = await app_client.post(
+        f"/api/v1/agents/executions/{execute_payload['execution_id']}/feedback",
+        params={"score": 2, "comment": "付款风险应引用验收条款"},
+        headers=auth_headers,
+    )
+    assert feedback_resp.status_code == 200, feedback_resp.text
+    feedback_payload = unwrap_json(feedback_resp)
+    assert feedback_payload["regression_case_id"].startswith("reg_")
+
+    detail_after_feedback = await app_client.get(
+        f"/api/v1/agents/executions/{execute_payload['execution_id']}",
+        headers=auth_headers,
+    )
+    assert detail_after_feedback.status_code == 200
+    feedback_detail = unwrap_json(detail_after_feedback)
+    assert feedback_detail["user_feedback"] == 2
+    assert feedback_detail["regression_case_id"] == feedback_payload["regression_case_id"]
+
+    regression_list_resp = await app_client.get("/api/v1/agents/regression-cases", headers=auth_headers)
+    assert regression_list_resp.status_code == 200
+    regression_list = unwrap_json(regression_list_resp)
+    assert regression_list["total"] == 1
+    assert regression_list["items"][0]["regression_case_id"] == feedback_payload["regression_case_id"]
+
+    regression_detail_resp = await app_client.get(
+        f"/api/v1/agents/regression-cases/{feedback_payload['regression_case_id']}",
+        headers=auth_headers,
+    )
+    assert regression_detail_resp.status_code == 200
+    regression_detail = unwrap_json(regression_detail_resp)
+    assert regression_detail["expected_correction"] == "付款风险应引用验收条款"
+
+    metrics_resp = await app_client.get("/api/v1/system/metrics/overview", headers=auth_headers)
+    assert metrics_resp.status_code == 200
+    metrics = unwrap_json(metrics_resp)
+    workbench = metrics["contract_workbench"]
+    assert workbench["planned_executions"] >= 1
+    assert workbench["plan_success_rate"] == 1.0
+    assert workbench["user_feedback_avg"] == 2
+    assert workbench["regression_cases_total"] == 1
+
+
+def test_sub_agent_contract_schema_roundtrip() -> None:
+    from app.agents.base import AgentResult, AgentStep, StepType
+    from app.agents.contracts import SUB_AGENT_CONTRACTS, build_sub_agent_input, build_sub_agent_output
+    from app.agents.tool_catalog import tool_catalog_by_domain
+
+    expected_agents = {"retrieval", "compliance", "comparison", "drafting", "validation"}
+    assert expected_agents.issubset(SUB_AGENT_CONTRACTS)
+    catalog = tool_catalog_by_domain()
+    assert {"contract", "review", "knowledge", "observability"}.issubset(catalog)
+    assert any(item["name"] == "compliance.review" for item in catalog["review"])
+
+    task_input = build_sub_agent_input(
+        agent_type="compliance",
+        task_description="review payment and termination clauses",
+        context_payload={
+            "tenant_id": "default",
+            "session_id": "session-1",
+            "decision_id": "dec_1",
+            "filters": {"doc_id": "doc-1"},
+            "references": [
+                {
+                    "citation_id": "cit-1",
+                    "citation_code": "CIT-1",
+                    "doc_title": "Mock Regulation",
+                    "chunk_id": "chunk-1",
+                    "excerpt": "legal basis",
+                }
+            ],
+        },
+    )
+    assert task_input.schema_version
+    assert task_input.agent_type == "compliance"
+    assert task_input.tenant_id == "default"
+    assert task_input.document_ids == ["doc-1"]
+    assert task_input.references[0].citation_id == "cit-1"
+
+    result = AgentResult(
+        success=True,
+        output="中风险：付款期限需要补充验收条件。",
+        steps=[
+            AgentStep(
+                step_type=StepType.OBSERVATION,
+                content="checked",
+                tool_name="compliance_check",
+                tokens_used=11,
+                latency_ms=3.0,
+            )
+        ],
+        metadata={"mock": True},
+    )
+    task_output = build_sub_agent_output(task_input, result)
+    dumped = task_output.model_dump(mode="json")
+
+    assert dumped["schema_version"] == task_input.schema_version
+    assert dumped["agent_type"] == "compliance"
+    assert dumped["success"] is True
+    assert dumped["findings"][0]["severity"] == "medium"
+    assert dumped["references"][0]["citation_id"] == "cit-1"
+    assert dumped["tool_results"][0]["tool_name"] == "compliance_check"
+
+
+def test_local_contract_review_samples_replay() -> None:
+    from app.api.v1.agents import _build_agent_plan
+    from app.schemas.agent import AgentPlanRequest
+
+    fixture = Path(__file__).resolve().parent / "fixtures" / "contract_review_samples.jsonl"
+    cases = [json.loads(line) for line in fixture.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(cases) >= 10
+
+    for case in cases:
+        request = AgentPlanRequest(
+            query=case["query"],
+            session_id="00000000-0000-0000-0000-000000000001",
+            tenant_id="default",
+            task_type="contract_review",
+            context=case.get("context", {}),
+            filters=case.get("filters", {}),
+        )
+        plan = _build_agent_plan(request)
+        step_ids = {step["step_id"] for step in plan["steps"]}
+        assert set(case["expected_step_ids"]).issubset(step_ids), case["case_id"]
+        assert plan["requires_confirmation"] is case["requires_confirmation"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_route_tool_returns_contract_output(monkeypatch) -> None:
+    from app.agents.base import AgentResult, AgentStep, StepType
+    from app.agents.orchestrator import _IntentRoutingTool
+    import app.agents.orchestrator as orchestrator_module
+
+    class FakeComplianceAgent:
+        async def execute(self, query: str, context: dict | None = None):
+            assert context is not None
+            assert context["agent_contract"]["agent_type"] == "compliance"
+            assert context["agent_contract"]["document_ids"] == ["doc-1"]
+            return AgentResult(
+                success=True,
+                output="中风险：需要补充付款验收条件。",
+                steps=[
+                    AgentStep(
+                        step_type=StepType.OBSERVATION,
+                        content="checked",
+                        tool_name="compliance_check",
+                        tokens_used=8,
+                        latency_ms=1.5,
+                    )
+                ],
+                metadata={"fake": True},
+            )
+
+    monkeypatch.setitem(orchestrator_module.SUB_AGENTS, "compliance", FakeComplianceAgent)
+    tool = _IntentRoutingTool()
+    raw = await tool.execute(
+        agent_type="compliance",
+        task_description="review payment clause",
+        context_payload=json.dumps({"tenant_id": "default", "filters": {"doc_id": "doc-1"}}, ensure_ascii=False),
+    )
+    payload = json.loads(raw)
+    assert payload["schema_version"]
+    assert payload["agent_type"] == "compliance"
+    assert payload["success"] is True
+    assert payload["metadata"]["input_contract"]["document_ids"] == ["doc-1"]
+    assert payload["tool_results"][0]["tool_name"] == "compliance_check"
 
 
 @pytest.mark.asyncio

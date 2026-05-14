@@ -278,6 +278,8 @@ export interface PromptVersion {
 }
 
 export interface PromptTestResult {
+  trace_id?: string;
+  rendered_prompt?: string;
   output: string;
   tokens_used: number;
   latency_ms: number;
@@ -304,6 +306,8 @@ export const promptApi = {
       const payload = res.data as Record<string, unknown>;
       const usage = (payload.usage as Record<string, unknown>) || {};
       return {
+        trace_id: String(payload.trace_id || ''),
+        rendered_prompt: String(payload.rendered_prompt || ''),
         output: String(payload.output || ''),
         tokens_used: Number(usage.total_tokens || 0),
         latency_ms: Number(payload.latency_ms || 0),
@@ -446,6 +450,48 @@ export interface ReviewReport {
   generated_from?: string;
 }
 
+export interface PlanStep {
+  step_id: string;
+  title: string;
+  description: string;
+  domain: string;
+  tool: string;
+  action: string;
+  mutates_state: boolean;
+  status: string;
+}
+
+export interface AgentPlan {
+  decision_id: string;
+  intent_summary: string;
+  steps: PlanStep[];
+  requires_confirmation: boolean;
+  estimated_changes: string[];
+  context: Record<string, unknown>;
+  created_at: string;
+  expires_at: string;
+}
+
+export interface ToolResult {
+  step_number?: number;
+  span_id?: string;
+  parent_span_id?: string;
+  tool_name?: string;
+  status?: string;
+  latency_ms?: number;
+  tokens_used?: number;
+  observation?: string;
+}
+
+export interface DecisionRecord {
+  decision_id: string;
+  intent_summary: string;
+  plan?: AgentPlan;
+  execution_id?: string;
+  trace_id?: string;
+  status?: string;
+}
+
 export interface AgentExecution {
   execution_id?: string;
   id?: string;
@@ -459,6 +505,11 @@ export interface AgentExecution {
   task_type?: string;
   created_at?: string;
   completed_at?: string;
+  decision_id?: string;
+  plan?: AgentPlan | Record<string, unknown>;
+  tool_results?: ToolResult[];
+  user_feedback?: number;
+  regression_case_id?: string;
 }
 
 export interface SessionInfo {
@@ -495,6 +546,21 @@ export const sessionApi = {
 };
 
 export const agentApi = {
+  plan: async (payload: {
+    query: string;
+    session_id: string;
+    tenant_id: string;
+    task_type?: string;
+    context?: Record<string, unknown>;
+    filters?: Record<string, unknown>;
+  }) => (await api.post<AgentPlan>('/agents/plan', payload)).data,
+  executeDecision: async (
+    decisionId: string,
+    payload: {
+      confirmed: boolean;
+      comment?: string;
+    },
+  ) => (await api.post<AgentExecution>(`/agents/decisions/${decisionId}/execute`, payload)).data,
   execute: async (payload: {
     query: string;
     task_type: string;
@@ -528,6 +594,20 @@ export interface SystemMetrics {
   error_rate: { timestamp: string; value: number }[];
   active_connections: number;
   services: ServiceHealth[];
+  contract_workbench?: {
+    plan_success_rate: number;
+    planned_executions: number;
+    tool_failure_rate: number;
+    tool_calls_total: number;
+    citation_coverage_rate: number;
+    risk_items_total: number;
+    low_confidence_rate: number;
+    user_feedback_avg: number;
+    user_feedback_count: number;
+    contract_review_failure_rate: number;
+    contract_review_avg_latency_ms: number;
+    regression_cases_total: number;
+  };
 }
 
 export interface ServiceHealth {
@@ -574,6 +654,7 @@ function mapSystemOverview(payload: Record<string, unknown>): SystemMetrics {
   const latency = (payload.latency as Record<string, unknown>) || {};
   const errorRate = (payload.error_rate as Record<string, unknown>) || {};
   const servicesMap = (payload.services as Record<string, Record<string, unknown>>) || {};
+  const workbench = (payload.contract_workbench as Record<string, unknown>) || {};
   return {
     qps: [{ timestamp, value: Number((payload.qps as Record<string, unknown>)?.current || 0) }],
     latency_p50: [{ timestamp, value: Number(latency.p50_ms || 0) }],
@@ -586,6 +667,20 @@ function mapSystemOverview(payload: Record<string, unknown>): SystemMetrics {
       uptime: Number(svc.uptime || 1),
       last_check: timestamp,
     })),
+    contract_workbench: {
+      plan_success_rate: Number(workbench.plan_success_rate || 0),
+      planned_executions: Number(workbench.planned_executions || 0),
+      tool_failure_rate: Number(workbench.tool_failure_rate || 0),
+      tool_calls_total: Number(workbench.tool_calls_total || 0),
+      citation_coverage_rate: Number(workbench.citation_coverage_rate || 0),
+      risk_items_total: Number(workbench.risk_items_total || 0),
+      low_confidence_rate: Number(workbench.low_confidence_rate || 0),
+      user_feedback_avg: Number(workbench.user_feedback_avg || 0),
+      user_feedback_count: Number(workbench.user_feedback_count || 0),
+      contract_review_failure_rate: Number(workbench.contract_review_failure_rate || 0),
+      contract_review_avg_latency_ms: Number(workbench.contract_review_avg_latency_ms || 0),
+      regression_cases_total: Number(workbench.regression_cases_total || 0),
+    },
   };
 }
 
@@ -678,6 +773,25 @@ export const dashboardApi = {
       return fallback.data;
     }
   },
+};
+
+// ===================== Evaluation APIs =====================
+
+export interface EvaluationScores {
+  relevance: number;
+  factuality: number;
+  completeness: number;
+  clarity: number;
+}
+
+export const evaluationApi = {
+  scoreExecution: async (executionId: string) =>
+    (await api.post<EvaluationScores & { execution_id: string }>(`/evaluation/score/${executionId}`)).data,
+  batchScore: async (limit = 50) =>
+    (await api.post<{ scored: number; errors: number; total: number }>('/evaluation/batch', null, { params: { limit } }))
+      .data,
+  getMetrics: async () =>
+    (await api.get<{ total_scored: number; avg_relevance: number; avg_factuality: number }>('/evaluation/metrics')).data,
 };
 
 export default api;

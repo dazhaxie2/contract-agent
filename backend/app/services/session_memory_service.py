@@ -21,7 +21,12 @@ def _utcnow() -> datetime:
 def _rough_token_count(text: str) -> int:
     if not text:
         return 0
-    return max(1, len(text) // 4)
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except Exception:
+        return max(1, len(text) // 4)
 
 
 def _summary_text_from_messages(messages: Iterable[ConversationMessage], max_len: int = 1600) -> str:
@@ -41,7 +46,6 @@ def _extract_candidate_facts(text: str) -> list[tuple[str, str, list[str]]]:
     if not text:
         return candidates
 
-    # Pattern 1: key: value
     for line in text.splitlines():
         line = line.strip()
         if not line or ":" not in line:
@@ -52,13 +56,11 @@ def _extract_candidate_facts(text: str) -> list[tuple[str, str, list[str]]]:
         if key and value:
             candidates.append((key.lower(), value, ["colon_pair"]))
 
-    # Pattern 2: simple "X is Y"
     for match in re.finditer(r"([A-Za-z0-9_\-\u4e00-\u9fa5]{2,32})\s+is\s+([^.,;\n]{2,128})", text, flags=re.IGNORECASE):
         key = match.group(1).strip().lower()
         value = match.group(2).strip()
         candidates.append((key, value, ["is_statement"]))
 
-    # Pattern 3: Chinese "X是Y"
     for match in re.finditer(r"([\u4e00-\u9fa5A-Za-z0-9_\-]{2,32})是([\u4e00-\u9fa5A-Za-z0-9_\-、，, ]{2,128})", text):
         key = match.group(1).strip().lower()
         value = match.group(2).strip()
@@ -70,7 +72,171 @@ def _extract_candidate_facts(text: str) -> list[tuple[str, str, list[str]]]:
     return list(dedup.values())[:20]
 
 
+async def _llm_extract_facts(text: str) -> list[tuple[str, str, list[str]]]:
+    if not text or len(text) < 20:
+        return []
+    try:
+        from app.services.llm_service import llm_service
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Extract structured facts from this text. Output one fact per line as: key | value\n"
+                    "Keys should be lowercase English or Chinese nouns. Values should be concise.\n"
+                    "Only extract clear, factual statements. Output max 10 facts. No explanations."
+                ),
+            },
+            {"role": "user", "content": text[:2000]},
+        ]
+        result = await llm_service.light_generate(messages)
+        content = result.get("content", "")
+        facts = []
+        for line in content.strip().splitlines():
+            line = line.strip()
+            if "|" not in line:
+                continue
+            parts = line.split("|", 1)
+            key = parts[0].strip()[:128].lower()
+            value = parts[1].strip()[:512]
+            if key and value and len(key) >= 2:
+                facts.append((key, value, ["llm_extracted"]))
+        return facts[:15]
+    except Exception:
+        return []
+
+
 class SessionMemoryService:
+    async def get_or_create_user_profile(
+        self,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        tenant_id: str,
+    ):
+        from app.models.memory import UserProfile
+
+        row = await db.scalar(
+            select(UserProfile).where(
+                UserProfile.tenant_id == tenant_id,
+                UserProfile.user_id == user_id,
+            )
+        )
+        if row:
+            return row
+        now = _utcnow()
+        row = UserProfile(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            tenant_id=tenant_id,
+            industry="",
+            company_type="",
+            common_contract_types=[],
+            focus_areas=[],
+            compliance_rules=[],
+            preferences={},
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(row)
+        await db.flush()
+        return row
+
+    async def update_user_profile(
+        self,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        tenant_id: str,
+        updates: dict,
+    ):
+        profile = await self.get_or_create_user_profile(db, user_id, tenant_id)
+        for field_name in ("industry", "company_type"):
+            if field_name in updates and updates[field_name]:
+                setattr(profile, field_name, updates[field_name])
+        for field_name in ("common_contract_types", "focus_areas", "compliance_rules"):
+            if field_name in updates and isinstance(updates[field_name], list):
+                setattr(profile, field_name, updates[field_name])
+        if "preferences" in updates and isinstance(updates["preferences"], dict):
+            merged = {**(profile.preferences or {}), **updates["preferences"]}
+            profile.preferences = merged
+        profile.updated_at = _utcnow()
+        await db.flush()
+        return profile
+
+    async def extract_profile_from_text(
+        self,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        tenant_id: str,
+        text: str,
+    ) -> None:
+        if not text or len(text) < 30:
+            return
+        try:
+            from app.services.llm_service import llm_service
+
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Extract user profile information from this text. Output JSON only:\n"
+                        '{"industry": "", "company_type": "", "contract_types": [], "focus_areas": []}\n'
+                        "Only fill in fields that are clearly mentioned. Leave empty strings / empty arrays for unknowns."
+                    ),
+                },
+                {"role": "user", "content": text[:1500]},
+            ]
+            result = await llm_service.light_generate(messages)
+            import json
+
+            content = result.get("content", "{}")
+            import re as _re
+
+            match = _re.search(r"\{[^}]+\}", content)
+            if not match:
+                return
+            parsed = json.loads(match.group())
+            updates = {}
+            if parsed.get("industry"):
+                updates["industry"] = parsed["industry"]
+            if parsed.get("company_type"):
+                updates["company_type"] = parsed["company_type"]
+            if parsed.get("contract_types"):
+                updates["common_contract_types"] = parsed["contract_types"]
+            if parsed.get("focus_areas"):
+                updates["focus_areas"] = parsed["focus_areas"]
+            if updates:
+                await self.update_user_profile(db, user_id, tenant_id, updates)
+        except Exception:
+            pass
+
+    async def get_profile_context(
+        self,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        tenant_id: str,
+    ) -> dict:
+        try:
+            profile = await self.get_or_create_user_profile(db, user_id, tenant_id)
+            parts = []
+            if profile.industry:
+                parts.append(f"行业: {profile.industry}")
+            if profile.company_type:
+                parts.append(f"企业类型: {profile.company_type}")
+            if profile.common_contract_types:
+                parts.append(f"常用合同类型: {', '.join(profile.common_contract_types)}")
+            if profile.focus_areas:
+                parts.append(f"关注领域: {', '.join(profile.focus_areas)}")
+            if profile.compliance_rules:
+                parts.append(f"合规规则: {', '.join(str(r) for r in profile.compliance_rules[:5])}")
+            return {
+                "profile_text": "\n".join(parts) if parts else "",
+                "industry": profile.industry,
+                "company_type": profile.company_type,
+                "focus_areas": profile.focus_areas,
+            }
+        except Exception:
+            return {"profile_text": "", "industry": "", "company_type": "", "focus_areas": []}
+
     async def ensure_session(
         self,
         db: AsyncSession,
@@ -268,6 +434,11 @@ class SessionMemoryService:
         text: str,
     ) -> int:
         candidates = _extract_candidate_facts(text)
+        llm_facts = await _llm_extract_facts(text)
+        for fact in llm_facts:
+            key_val = (fact[0], fact[1])
+            if key_val not in {(c[0], c[1]) for c in candidates}:
+                candidates.append(fact)
         if not candidates:
             return 0
 

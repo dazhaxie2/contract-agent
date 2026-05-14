@@ -49,6 +49,7 @@ const SystemDashboard: React.FC = () => {
   const qpsCurrent = qpsHistory[qpsHistory.length - 1]?.value ?? 0;
   const p99Current = latencyHistory[latencyHistory.length - 1]?.value ?? 0;
   const errCurrent = errorRateHistory[errorRateHistory.length - 1]?.value ?? 0;
+  const workbench = metrics?.contract_workbench;
 
   const services = metrics?.services ?? [];
   const serviceRows = useMemo(
@@ -91,6 +92,29 @@ const SystemDashboard: React.FC = () => {
             </Card>
           </Col>
         </Row>
+
+        <Card title="Contract Workbench Metrics" loading={loading && !metrics}>
+          <Row gutter={[16, 16]}>
+            <Col xs={12} md={8} xl={4}>
+              <Statistic title="Plan Success" value={(workbench?.plan_success_rate || 0) * 100} precision={1} suffix="%" />
+            </Col>
+            <Col xs={12} md={8} xl={4}>
+              <Statistic title="Tool Failure" value={(workbench?.tool_failure_rate || 0) * 100} precision={1} suffix="%" />
+            </Col>
+            <Col xs={12} md={8} xl={4}>
+              <Statistic title="Citation Coverage" value={(workbench?.citation_coverage_rate || 0) * 100} precision={1} suffix="%" />
+            </Col>
+            <Col xs={12} md={8} xl={4}>
+              <Statistic title="Low Confidence" value={(workbench?.low_confidence_rate || 0) * 100} precision={1} suffix="%" />
+            </Col>
+            <Col xs={12} md={8} xl={4}>
+              <Statistic title="Feedback Avg" value={workbench?.user_feedback_avg || 0} precision={2} />
+            </Col>
+            <Col xs={12} md={8} xl={4}>
+              <Statistic title="Review Avg Latency" value={workbench?.contract_review_avg_latency_ms || 0} precision={0} suffix="ms" />
+            </Col>
+          </Row>
+        </Card>
 
         <Row gutter={[16, 16]}>
           <Col xs={24} lg={12}>
@@ -139,4 +163,3 @@ const SystemDashboard: React.FC = () => {
 };
 
 export default SystemDashboard;
-

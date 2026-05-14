@@ -217,4 +217,6 @@ class BaseAgent(ABC):
             facts = "\n".join(f"- {item['key']}: {item['value']}" for item in context["memory_facts"][:10])
             if facts:
                 parts.append(f"## Facts\n{facts}")
+        if context.get("user_profile"):
+            parts.append(f"## User Profile\n{context['user_profile']}")
         return "\n\n".join(parts)

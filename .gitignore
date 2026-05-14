@@ -8,6 +8,7 @@ venv/
 *.egg-info/
 dist/
 build/
+public/
 
 # Node
 node_modules/

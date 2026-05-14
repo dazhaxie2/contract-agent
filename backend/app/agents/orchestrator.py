@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import json
-import time
 
-from loguru import logger
-
-from app.agents.base import AgentResult, AgentStep, BaseAgent, StepType, Tool
+from app.agents.base import BaseAgent, Tool
+from app.agents.contracts import build_sub_agent_input, build_sub_agent_output
 from app.agents.sub_agents import SUB_AGENTS
 from app.core.config import settings
-from app.services.llm_service import llm_service
 
 
 class _IntentRoutingTool(Tool):
@@ -58,19 +55,19 @@ class _IntentRoutingTool(Tool):
         if "tenant_id" not in sub_context and "tenant_id" in kwargs:
             sub_context["tenant_id"] = kwargs["tenant_id"]
 
+        contract_input = build_sub_agent_input(
+            agent_type=agent_type,
+            task_description=task_description,
+            context_payload=sub_context,
+            fallback_tenant_id=str(kwargs.get("tenant_id") or "default"),
+        )
+        sub_context["agent_contract"] = contract_input.model_dump(mode="json")
+
         agent = agent_cls()
         result = await agent.execute(query=task_description, context=sub_context)
+        contract_output = build_sub_agent_output(contract_input, result)
 
-        return json.dumps(
-            {
-                "agent": agent_type,
-                "success": result.success,
-                "output": result.output,
-                "steps_count": len(result.steps),
-                "tokens_used": result.total_tokens,
-            },
-            ensure_ascii=False,
-        )
+        return json.dumps(contract_output.model_dump(mode="json"), ensure_ascii=False)
 
 
 class _DirectSearchTool(Tool):
@@ -168,6 +165,7 @@ class OrchestratorAgent(BaseAgent):
             "4) After receiving results from sub-agents, synthesize and present a coherent answer.\n"
             "5) All conclusions must be grounded in retrieval context. State uncertainty explicitly.\n"
             "6) For compliance reviews, always route to the compliance agent, then optionally to the validation agent.\n"
+            "7) Sub-agent calls are wrapped with the shared agent_contract input/output schema; preserve that structure when synthesizing.\n"
         )
 
 

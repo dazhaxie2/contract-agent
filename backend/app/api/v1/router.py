@@ -8,6 +8,7 @@ from app.api.v1 import (
     citations,
     dashboard,
     documents,
+    evaluation,
     legal,
     memory,
     models,
@@ -30,4 +31,5 @@ api_router.include_router(memory.router, prefix="/memory", tags=["memory"])
 api_router.include_router(retrieval.router, prefix="/retrieval", tags=["retrieval"])
 api_router.include_router(citations.router, prefix="/citations", tags=["citations"])
 api_router.include_router(system.router, prefix="/system", tags=["system"])
+api_router.include_router(evaluation.router, prefix="/evaluation", tags=["evaluation"])
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])

@@ -137,6 +137,7 @@ async def _run_prompt_test(req: PromptTestRequest, db: AsyncSession, tenant_id: 
     latency_ms = (time.perf_counter() - start_time) * 1000
 
     return PromptTestResponse(
+        trace_id=f"prompt_{uuid.uuid4().hex[:24]}",
         rendered_prompt=rendered,
         output=result["content"],
         model=result.get("model", ""),
@@ -178,6 +179,8 @@ async def test_prompt_compat(
     _set_compat_headers(response, "/api/v1/prompts/test")
     usage = result.usage or {}
     return {
+        "trace_id": result.trace_id,
+        "rendered_prompt": result.rendered_prompt,
         "output": result.output,
         "tokens_used": usage.get("total_tokens", 0),
         "latency_ms": result.latency_ms,

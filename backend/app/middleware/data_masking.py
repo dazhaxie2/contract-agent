@@ -9,6 +9,13 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 
+def _safe_headers(headers) -> dict:
+    copied = dict(headers)
+    copied.pop("content-length", None)
+    copied.pop("Content-Length", None)
+    return copied
+
+
 class DataMaskingMiddleware(BaseHTTPMiddleware):
     """Mask common PII patterns in JSON responses for selected endpoints."""
 
@@ -64,7 +71,7 @@ class DataMaskingMiddleware(BaseHTTPMiddleware):
         return Response(
             content=masked_body,
             status_code=response.status_code,
-            headers=dict(response.headers),
+            headers=_safe_headers(response.headers),
             media_type=response.media_type,
         )
 

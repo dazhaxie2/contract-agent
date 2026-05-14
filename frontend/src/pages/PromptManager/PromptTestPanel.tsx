@@ -95,6 +95,15 @@ const PromptTestPanel: React.FC = () => {
                     <Statistic title="评分" value={result.score} precision={2} />
                   </Col>
                 </Row>
+                {result.trace_id ? <Text type="secondary">Trace：{result.trace_id}</Text> : null}
+                {result.rendered_prompt ? (
+                  <Alert
+                    type="info"
+                    message="渲染后的 Prompt"
+                    description={<pre className="result-markdown">{result.rendered_prompt}</pre>}
+                    showIcon
+                  />
+                ) : null}
                 <pre className="result-markdown">{result.output}</pre>
                 <Text type="secondary">模型：{result.model_used || '-'}</Text>
               </Space>

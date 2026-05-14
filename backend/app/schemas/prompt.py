@@ -102,6 +102,7 @@ class PromptTestRequest(BaseModel):
 
 
 class PromptTestResponse(BaseModel):
+    trace_id: str
     rendered_prompt: str
     output: str
     model: str

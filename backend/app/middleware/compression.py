@@ -16,6 +16,13 @@ except ImportError:
     HAS_BROTLI = False
 
 
+def _safe_headers(headers) -> dict:
+    copied = dict(headers)
+    copied.pop("content-length", None)
+    copied.pop("Content-Length", None)
+    return copied
+
+
 class CompressionMiddleware(BaseHTTPMiddleware):
     """Gzip + Brotli 双压缩"""
 
@@ -50,7 +57,7 @@ class CompressionMiddleware(BaseHTTPMiddleware):
             return Response(
                 content=body,
                 status_code=response.status_code,
-                headers=dict(response.headers),
+                headers=_safe_headers(response.headers),
                 media_type=response.media_type,
             )
 
@@ -60,7 +67,7 @@ class CompressionMiddleware(BaseHTTPMiddleware):
             return Response(
                 content=compressed,
                 status_code=response.status_code,
-                headers={**dict(response.headers), "Content-Encoding": "br", "Content-Length": str(len(compressed))},
+                headers={**_safe_headers(response.headers), "Content-Encoding": "br", "Content-Length": str(len(compressed))},
                 media_type=response.media_type,
             )
 
@@ -73,13 +80,17 @@ class CompressionMiddleware(BaseHTTPMiddleware):
             return Response(
                 content=compressed,
                 status_code=response.status_code,
-                headers={**dict(response.headers), "Content-Encoding": "gzip", "Content-Length": str(len(compressed))},
+                headers={
+                    **_safe_headers(response.headers),
+                    "Content-Encoding": "gzip",
+                    "Content-Length": str(len(compressed)),
+                },
                 media_type=response.media_type,
             )
 
         return Response(
             content=body,
             status_code=response.status_code,
-            headers=dict(response.headers),
+            headers=_safe_headers(response.headers),
             media_type=response.media_type,
         )

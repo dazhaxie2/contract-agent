@@ -19,6 +19,42 @@ class AgentExecuteRequest(BaseModel):
     filters: dict = Field(default_factory=dict)
 
 
+class PlanStep(BaseModel):
+    step_id: str
+    title: str
+    description: str = ""
+    domain: str
+    tool: str
+    action: str = "read"
+    mutates_state: bool = False
+    status: str = "pending"
+
+
+class AgentPlanRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=10000)
+    session_id: UUID
+    tenant_id: str = Field(..., min_length=1, max_length=64)
+    task_type: str = Field(default="contract_review")
+    context: dict = Field(default_factory=dict)
+    filters: dict = Field(default_factory=dict)
+
+
+class AgentPlanResponse(BaseModel):
+    decision_id: str
+    intent_summary: str
+    steps: list[PlanStep]
+    requires_confirmation: bool
+    estimated_changes: list[str] = Field(default_factory=list)
+    context: dict = Field(default_factory=dict)
+    created_at: datetime
+    expires_at: datetime
+
+
+class AgentDecisionExecuteRequest(BaseModel):
+    confirmed: bool = True
+    comment: str = ""
+
+
 class AgentExecuteResponse(BaseModel):
     execution_id: UUID
     trace_id: str
@@ -29,6 +65,10 @@ class AgentExecuteResponse(BaseModel):
     usage: dict = Field(default_factory=dict)
     latency_ms: float
     review_report: dict | None = None
+    decision_id: str | None = None
+    plan: dict | None = None
+    tool_results: list[dict] = Field(default_factory=list)
+    regression_case_id: str | None = None
 
 
 class AgentStepResponse(BaseModel):

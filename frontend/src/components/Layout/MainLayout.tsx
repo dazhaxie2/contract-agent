@@ -6,14 +6,21 @@ import {
   FileProtectOutlined,
   FileTextOutlined,
   LogoutOutlined,
+  MessageOutlined,
   MonitorOutlined,
   RobotOutlined,
   UserOutlined,
 } from '@ant-design/icons';
+import { useAuthStore } from '../../store';
 
 const { Header, Sider, Content } = Layout;
 
 const menuItems = [
+  {
+    key: '/chat',
+    icon: <MessageOutlined />,
+    label: '智能对话',
+  },
   {
     key: '/reviews',
     icon: <FileProtectOutlined />,
@@ -61,15 +68,16 @@ const MainLayout: React.FC = () => {
   const [collapsed, setCollapsed] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const auth = useAuthStore();
   const {
     token: { colorBgContainer },
   } = theme.useToken();
 
   useEffect(() => {
-    if (!localStorage.getItem('access_token')) {
+    if (!localStorage.getItem('access_token') && !auth.isAuthenticated) {
       navigate('/login', { replace: true });
     }
-  }, [navigate]);
+  }, [navigate, auth.isAuthenticated]);
 
   const userMenu = {
     items: [
@@ -78,8 +86,7 @@ const MainLayout: React.FC = () => {
     ],
     onClick: ({ key }: { key: string }) => {
       if (key === 'logout') {
-        localStorage.removeItem('access_token');
-        localStorage.removeItem('refresh_token');
+        auth.logout();
         navigate('/login', { replace: true });
       }
     },

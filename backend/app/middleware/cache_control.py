@@ -48,6 +48,13 @@ class LRUCache:
 _l1_cache = LRUCache(maxsize=2000, ttl=300)
 
 
+def _safe_headers(headers) -> dict:
+    copied = dict(headers)
+    copied.pop("content-length", None)
+    copied.pop("Content-Length", None)
+    return copied
+
+
 class CacheControlMiddleware(BaseHTTPMiddleware):
     """多级缓存控制"""
 
@@ -86,7 +93,7 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
             response = Response(
                 content=cached["body"],
                 status_code=cached["status_code"],
-                headers=cached["headers"],
+                headers=_safe_headers(cached["headers"]),
                 media_type="application/json",
             )
             response.headers["X-Cache"] = "HIT-L1"
@@ -106,13 +113,13 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
             _l1_cache.set(cache_key, {
                 "body": body,
                 "status_code": response.status_code,
-                "headers": dict(response.headers),
+                "headers": _safe_headers(response.headers),
             })
 
             new_response = Response(
                 content=body,
                 status_code=response.status_code,
-                headers=dict(response.headers),
+                headers=_safe_headers(response.headers),
                 media_type=response.media_type,
             )
             new_response.headers["X-Cache"] = "MISS"

@@ -12,7 +12,8 @@ import {
   Typography,
   message,
 } from 'antd';
-import { DeleteOutlined, FileTextOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { AuditOutlined, DeleteOutlined, DiffOutlined, FileTextOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 
 import { documentApi, DocumentChunk, DocumentItem, IngestionJob } from '../../services/api';
 
@@ -34,6 +35,7 @@ const statusColor: Record<string, string> = {
 };
 
 const DocumentLibrary: React.FC = () => {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [items, setItems] = useState<DocumentItem[]>([]);
@@ -86,6 +88,15 @@ const DocumentLibrary: React.FC = () => {
         await loadDocuments(page);
       },
     });
+  };
+
+  const startReview = (doc: DocumentItem, mode: 'review' | 'compare' = 'review') => {
+    const params = new URLSearchParams({
+      doc_id: doc.id,
+      review_type: mode === 'compare' ? 'clause_compare' : 'general',
+    });
+    if (mode === 'compare') params.set('mode', 'compare');
+    navigate(`/reviews?${params.toString()}`);
   };
 
   return (
@@ -154,11 +165,19 @@ const DocumentLibrary: React.FC = () => {
             { title: '上传时间', dataIndex: 'created_at', width: 220 },
             {
               title: '操作',
-              width: 100,
+              width: 240,
               render: (_, row) => (
-                <Button danger type="text" icon={<DeleteOutlined />} onClick={() => deleteDoc(row)}>
-                  删除
-                </Button>
+                <Space>
+                  <Button type="text" icon={<AuditOutlined />} onClick={() => startReview(row)}>
+                    审查
+                  </Button>
+                  <Button type="text" icon={<DiffOutlined />} onClick={() => startReview(row, 'compare')}>
+                    对比
+                  </Button>
+                  <Button danger type="text" icon={<DeleteOutlined />} onClick={() => deleteDoc(row)}>
+                    删除
+                  </Button>
+                </Space>
               ),
             },
           ]}
@@ -168,6 +187,14 @@ const DocumentLibrary: React.FC = () => {
       <Drawer title="文档详情" open={drawerOpen} onClose={() => setDrawerOpen(false)} width={720}>
         {selected ? (
           <Space direction="vertical" style={{ width: '100%' }} size={16}>
+            <Space>
+              <Button type="primary" icon={<AuditOutlined />} onClick={() => startReview(selected)}>
+                作为当前合同发起审查
+              </Button>
+              <Button icon={<DiffOutlined />} onClick={() => startReview(selected, 'compare')}>
+                进入版本对比
+              </Button>
+            </Space>
             <Descriptions column={1} size="small" bordered>
               <Descriptions.Item label="标题">{selected.title}</Descriptions.Item>
               <Descriptions.Item label="类型">{typeLabels[selected.doc_type] || selected.doc_type}</Descriptions.Item>

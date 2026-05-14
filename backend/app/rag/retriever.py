@@ -158,12 +158,25 @@ class HybridRetriever:
         filters: dict | None = None,
         top_k: int | None = None,
     ) -> list[RetrievalResult]:
+        from app.services.cache_service import retrieval_cache
+        top_k = top_k or settings.rag.fine_rerank_top_k
+        cached = await retrieval_cache.get(query, tenant_id, top_k)
+        if cached and not filters:
+            return [RetrievalResult(**item) for item in cached]
         results, _debug = await self.retrieve_with_debug(
             query=query,
             tenant_id=tenant_id,
             filters=filters,
             top_k=top_k,
         )
+        if not filters and results:
+            try:
+                await retrieval_cache.set(query, tenant_id, top_k, [
+                    {"chunk_id": r.chunk_id, "content": r.content, "score": r.score, "metadata": r.metadata}
+                    for r in results
+                ])
+            except Exception:
+                pass
         return results
 
     async def retrieve_with_debug(

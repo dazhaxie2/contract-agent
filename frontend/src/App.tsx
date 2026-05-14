@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 
 import MainLayout from './components/Layout/MainLayout';
 import LoginPage from './pages/Auth/LoginPage';
+import ChatPage from './pages/Chat/ChatPage';
 import ReviewWorkspace from './pages/Reviews/ReviewWorkspace';
 import DocumentLibrary from './pages/Documents/DocumentLibrary';
 import SystemDashboard from './pages/Dashboard/SystemDashboard';
@@ -23,8 +24,9 @@ const App: React.FC = () => (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/" element={<MainLayout />}>
-        <Route index element={<Navigate to="/reviews" replace />} />
+        <Route index element={<Navigate to="/chat" replace />} />
 
+        <Route path="chat" element={<ChatPage />} />
         <Route path="reviews" element={<ReviewWorkspace />} />
         <Route path="documents" element={<DocumentLibrary />} />
 

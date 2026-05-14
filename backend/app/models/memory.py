@@ -58,3 +58,27 @@ class MemorySummary(Base):
         Index("idx_memory_summary_session_type", "session_id", "summary_type", "updated_at"),
         Index("idx_memory_summary_tenant_time", "tenant_id", "updated_at"),
     )
+
+
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    industry: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    company_type: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    common_contract_types: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    focus_areas: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    compliance_rules: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    preferences: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("idx_user_profile_tenant_user", "tenant_id", "user_id", unique=True),
+    )

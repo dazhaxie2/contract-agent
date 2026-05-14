@@ -1,6 +1,6 @@
 """Model registry for metadata loading."""
 
-from app.models.agent import AgentExecution, AgentStep
+from app.models.agent import AgentDecision, AgentExecution, AgentStep
 from app.models.audit import AuditLog
 from app.models.conversation import ConversationMessage, ConversationSession
 from app.models.document import Document, DocumentChunk
@@ -28,6 +28,7 @@ __all__ = [
     "ModelDeployment",
     "ABTest",
     "AgentExecution",
+    "AgentDecision",
     "AgentStep",
     "RetrievalLog",
     "CitationRecord",

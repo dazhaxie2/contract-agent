@@ -175,8 +175,8 @@ class HybridRetriever:
                     {"chunk_id": r.chunk_id, "content": r.content, "score": r.score, "metadata": r.metadata}
                     for r in results
                 ])
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"retrieval cache write failed tenant={tenant_id}: {exc}")
         return results
 
     async def retrieve_with_debug(

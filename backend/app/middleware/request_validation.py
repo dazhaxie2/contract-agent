@@ -6,6 +6,7 @@ Content-Type检查、请求体大小限制、恶意输入检测
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+from loguru import logger
 
 
 class RequestValidationMiddleware(BaseHTTPMiddleware):
@@ -74,7 +75,7 @@ class RequestValidationMiddleware(BaseHTTPMiddleware):
                                 "detail": "MALICIOUS_INPUT_DETECTED",
                             },
                         )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"request body validation skipped path={request.url.path}: {exc}")
 
         return await call_next(request)

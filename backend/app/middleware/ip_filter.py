@@ -4,6 +4,7 @@
 """
 
 import ipaddress
+from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -56,8 +57,8 @@ class IPFilterMiddleware(BaseHTTPMiddleware):
                 continue
             try:
                 networks.append(ipaddress.ip_network(item, strict=False))
-            except ValueError:
-                pass
+            except ValueError as exc:
+                logger.warning(f"invalid IP filter entry ignored value={item}: {exc}")
         return networks
 
     @staticmethod

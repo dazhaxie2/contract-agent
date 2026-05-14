@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Alert, Badge, Button, Card, Col, Descriptions, Empty, Row, Space, Statistic, Tag, Typography } from 'antd';
 import { ArrowLeftOutlined, EditOutlined } from '@ant-design/icons';
-import { Line } from '@ant-design/charts';
 
+import { SimpleLineChart } from '../../components/Charts/SimpleCharts';
 import { modelApi, ModelConfig, ModelMetrics } from '../../services/api';
 
 const { Title } = Typography;
@@ -41,7 +41,6 @@ const ModelConfigDetail: React.FC = () => {
       (metrics?.timestamps || []).map((time, index) => ({
         time,
         value: metrics?.latency_p99?.[index] || 0,
-        metric: 'P99 延迟(ms)',
       })),
     [metrics],
   );
@@ -127,7 +126,7 @@ const ModelConfigDetail: React.FC = () => {
         <Col xs={24} lg={12}>
           <Card title="性能趋势 (24小时)" size="small" loading={loading}>
             {trendData.length ? (
-              <Line data={trendData} xField="time" yField="value" seriesField="metric" height={220} smooth />
+              <SimpleLineChart data={trendData.map((item) => ({ label: item.time, value: item.value }))} height={220} />
             ) : (
               <Empty description="暂无执行样本" />
             )}

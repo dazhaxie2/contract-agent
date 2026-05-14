@@ -29,8 +29,8 @@ def start_span(name: str, attrs: dict[str, Any] | None = None) -> Iterator[None]
         for key, value in (attrs or {}).items():
             try:
                 span.set_attribute(key, value)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"span attribute ignored name={name} key={key}: {exc}")
         try:
             yield
             if StatusCode is not None:
@@ -41,4 +41,3 @@ def start_span(name: str, attrs: dict[str, Any] | None = None) -> Iterator[None]
             span.record_exception(exc)
             logger.debug(f"span {name} failed: {exc}")
             raise
-

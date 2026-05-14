@@ -25,7 +25,9 @@ os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 
 import app.models  # noqa: E402,F401
 from app.core.database import Base, WriteSessionLocal, close_db, init_db  # noqa: E402
+from app.core.security import Roles, get_password_hash  # noqa: E402
 from app.main import create_app  # noqa: E402
+from app.models.user import User  # noqa: E402
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -45,17 +47,22 @@ async def app_client() -> AsyncIterator[AsyncClient]:
 
 @pytest_asyncio.fixture()
 async def auth_headers(app_client: AsyncClient) -> dict[str, str]:
-    register_resp = await app_client.post(
-        "/api/v1/auth/register",
-        json={
-            "username": "admin",
-            "email": "admin@example.com",
-            "password": "password123",
-            "full_name": "Admin",
-            "tenant_id": "default",
-        },
-    )
-    assert register_resp.status_code in {200, 409}, register_resp.text
+    async with WriteSessionLocal() as session:
+        session.add(
+            User(
+                username="admin",
+                email="admin@example.com",
+                hashed_password=get_password_hash("password123"),
+                full_name="Admin",
+                role=Roles.ADMIN,
+                tenant_id="default",
+                is_active=True,
+                is_superuser=True,
+                preferences={},
+            )
+        )
+        await session.commit()
+
     resp = await app_client.post(
         "/api/v1/auth/login",
         json={"username": "admin", "password": "password123"},

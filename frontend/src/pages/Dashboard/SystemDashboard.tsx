@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Card, Col, Row, Space, Statistic, Table, Typography } from 'antd';
-import { Line } from '@ant-design/charts';
 
+import { SimpleLineChart } from '../../components/Charts/SimpleCharts';
 import { dashboardApi, SystemMetrics } from '../../services/api';
 
 const { Title, Text } = Typography;
@@ -119,26 +119,12 @@ const SystemDashboard: React.FC = () => {
         <Row gutter={[16, 16]}>
           <Col xs={24} lg={12}>
             <Card title="QPS 趋势" loading={loading && qpsHistory.length === 0}>
-              <Line
-                data={qpsHistory.map((p) => ({ time: p.timestamp, value: p.value }))}
-                xField="time"
-                yField="value"
-                smooth
-                height={240}
-                tooltip={{ showTitle: false }}
-              />
+              <SimpleLineChart data={qpsHistory.map((p) => ({ label: p.timestamp, value: p.value }))} height={240} />
             </Card>
           </Col>
           <Col xs={24} lg={12}>
             <Card title="P99 延迟趋势" loading={loading && latencyHistory.length === 0}>
-              <Line
-                data={latencyHistory.map((p) => ({ time: p.timestamp, value: p.value }))}
-                xField="time"
-                yField="value"
-                smooth
-                height={240}
-                tooltip={{ showTitle: false }}
-              />
+              <SimpleLineChart data={latencyHistory.map((p) => ({ label: p.timestamp, value: p.value }))} height={240} />
             </Card>
           </Col>
         </Row>

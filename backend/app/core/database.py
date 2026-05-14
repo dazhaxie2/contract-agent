@@ -277,6 +277,7 @@ async def check_database_health(
         "documents": ["idx_doc_type_status", "idx_doc_tenant_type_date"],
         "document_chunks": ["idx_chunk_doc_index", "idx_chunk_hierarchy", "idx_chunk_tenant_search_text"],
         "agent_executions": ["idx_exec_tenant_status"],
+        "agent_decisions": ["idx_decision_tenant_status", "idx_decision_expires"],
         "sessions": ["idx_session_tenant_user_time"],
         "conversation_messages": ["idx_message_session_order"],
         "ingestion_jobs": ["idx_ingestion_tenant_status"],

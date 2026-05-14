@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,7 +19,7 @@ from app.agents.orchestrator import orchestrator_agent
 from app.agents.tool_catalog import tool_catalog_by_domain
 from app.core.database import get_read_db, get_write_db
 from app.core.request_context import RequestContext, resolve_request_context
-from app.models.agent import AgentExecution, AgentStep
+from app.models.agent import AgentDecision, AgentExecution, AgentStep
 from app.models.retrieval import RetrievalLog
 from app.rag.context_builder import context_builder
 from app.rag.retriever import hybrid_retriever
@@ -38,7 +39,6 @@ from app.services.session_memory_service import session_memory_service
 router = APIRouter()
 
 DECISION_TTL_SECONDS = 60 * 60
-_DECISION_STORE: dict[str, dict[str, Any]] = {}
 
 
 def get_request_context(request: Request) -> RequestContext:
@@ -154,15 +154,19 @@ def _build_contract_review_report(result_text: str, references: list[dict], quer
     }
 
 
-def _cleanup_decision_store(now: datetime | None = None) -> None:
+async def _expire_stale_decisions(db: AsyncSession, now: datetime | None = None) -> None:
     current = now or datetime.now(timezone.utc)
-    expired_ids = [
-        decision_id
-        for decision_id, record in _DECISION_STORE.items()
-        if record.get("expires_at") and record["expires_at"] < current
-    ]
-    for decision_id in expired_ids:
-        _DECISION_STORE.pop(decision_id, None)
+    rows = (
+        await db.scalars(
+            select(AgentDecision).where(
+                AgentDecision.status == "planned",
+                AgentDecision.expires_at < current,
+            )
+        )
+    ).all()
+    for row in rows:
+        row.status = "expired"
+        row.updated_at = current
 
 
 def _collect_document_filters(context: dict, filters: dict) -> dict:
@@ -308,16 +312,16 @@ def _build_agent_plan(req: AgentPlanRequest) -> dict[str, Any]:
     }
 
 
-def _decision_to_plan_response(record: dict[str, Any]) -> AgentPlanResponse:
+def _decision_to_plan_response(record: AgentDecision) -> AgentPlanResponse:
     return AgentPlanResponse(
-        decision_id=record["decision_id"],
-        intent_summary=record["intent_summary"],
-        steps=[PlanStep(**step) for step in record["steps"]],
-        requires_confirmation=record["requires_confirmation"],
-        estimated_changes=record["estimated_changes"],
-        context=record["context"],
-        created_at=record["created_at"],
-        expires_at=record["expires_at"],
+        decision_id=record.decision_id,
+        intent_summary=record.intent_summary,
+        steps=[PlanStep(**step) for step in record.steps],
+        requires_confirmation=record.requires_confirmation,
+        estimated_changes=record.estimated_changes,
+        context=record.context,
+        created_at=record.created_at,
+        expires_at=record.expires_at,
     )
 
 
@@ -550,35 +554,39 @@ async def _persist_failed_execution(
 @router.post("/plan", response_model=AgentPlanResponse)
 async def plan_agent(
     req: AgentPlanRequest,
+    db: AsyncSession = Depends(get_write_db),
     ctx: RequestContext = Depends(get_request_context),
 ):
-    """Create a confirmable execution plan without mutating persisted data."""
+    """Create and persist a confirmable plan without creating an execution record."""
 
     if req.tenant_id != ctx.tenant_id:
         raise HTTPException(status_code=403, detail="tenant mismatch")
 
     now = datetime.now(timezone.utc)
-    _cleanup_decision_store(now)
+    await _expire_stale_decisions(db, now)
     decision_id = f"dec_{uuid.uuid4().hex[:24]}"
     plan = _build_agent_plan(req)
-    record = {
-        "decision_id": decision_id,
-        "tenant_id": ctx.tenant_id,
-        "user_id": ctx.user_id,
-        "session_id": str(req.session_id),
-        "query": req.query,
-        "task_type": req.task_type,
-        "filters": plan["context"].get("filters", {}),
-        "intent_summary": plan["intent_summary"],
-        "steps": plan["steps"],
-        "requires_confirmation": plan["requires_confirmation"],
-        "estimated_changes": plan["estimated_changes"],
-        "context": plan["context"],
-        "created_at": now,
-        "expires_at": now + timedelta(seconds=DECISION_TTL_SECONDS),
-        "status": "planned",
-    }
-    _DECISION_STORE[decision_id] = record
+    record = AgentDecision(
+        decision_id=decision_id,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        session_id=req.session_id,
+        query=req.query,
+        task_type=req.task_type,
+        filters=plan["context"].get("filters", {}),
+        intent_summary=plan["intent_summary"],
+        steps=plan["steps"],
+        requires_confirmation=plan["requires_confirmation"],
+        estimated_changes=plan["estimated_changes"],
+        context=plan["context"],
+        status="planned",
+        user_confirmation={},
+        created_at=now,
+        expires_at=now + timedelta(seconds=DECISION_TTL_SECONDS),
+        updated_at=now,
+    )
+    db.add(record)
+    await db.flush()
     return _decision_to_plan_response(record)
 
 
@@ -612,33 +620,41 @@ async def execute_decision(
 ):
     """Execute a previously generated plan after user confirmation."""
 
-    _cleanup_decision_store()
-    record = _DECISION_STORE.get(decision_id)
+    await _expire_stale_decisions(db)
+    record = await db.scalar(
+        select(AgentDecision).where(
+            AgentDecision.decision_id == decision_id,
+        )
+    )
     if not record:
         raise HTTPException(status_code=404, detail="decision not found or expired")
-    if record["tenant_id"] != ctx.tenant_id:
+    if record.tenant_id != ctx.tenant_id:
         raise HTTPException(status_code=403, detail="tenant mismatch")
-    if record.get("requires_confirmation") and not confirmation.confirmed:
+    if record.status == "expired":
+        raise HTTPException(status_code=404, detail="decision not found or expired")
+    if record.status == "executed":
+        raise HTTPException(status_code=409, detail="decision already executed")
+    if record.requires_confirmation and not confirmation.confirmed:
         raise HTTPException(status_code=409, detail="decision requires user confirmation")
 
     execute_req = AgentExecuteRequest(
-        query=record["query"],
-        task_type=record.get("task_type") or "contract_review",
-        session_id=uuid.UUID(record["session_id"]),
+        query=record.query,
+        task_type=record.task_type or "contract_review",
+        session_id=record.session_id,
         tenant_id=ctx.tenant_id,
-        filters=record.get("filters") or {},
+        filters=record.filters or {},
     )
     response = await execute_agent(execute_req, db=db, ctx=ctx)
     tool_results = _tool_results_from_steps(response.steps)
     plan_payload = {
         "decision_id": decision_id,
-        "intent_summary": record["intent_summary"],
-        "steps": record["steps"],
-        "requires_confirmation": record["requires_confirmation"],
-        "estimated_changes": record["estimated_changes"],
-        "context": record["context"],
-        "created_at": record["created_at"].isoformat(),
-        "expires_at": record["expires_at"].isoformat(),
+        "intent_summary": record.intent_summary,
+        "steps": record.steps,
+        "requires_confirmation": record.requires_confirmation,
+        "estimated_changes": record.estimated_changes,
+        "context": record.context,
+        "created_at": record.created_at.isoformat(),
+        "expires_at": record.expires_at.isoformat(),
     }
     user_confirmation = {
         "confirmed": confirmation.confirmed,
@@ -666,9 +682,12 @@ async def execute_decision(
         execution.result_metadata = metadata
         await db.flush()
 
-    record["status"] = "executed"
-    record["execution_id"] = str(response.execution_id)
-    record["trace_id"] = response.trace_id
+    now = datetime.now(timezone.utc)
+    record.status = "executed"
+    record.execution_id = response.execution_id
+    record.trace_id = response.trace_id
+    record.user_confirmation = user_confirmation
+    record.updated_at = now
     response.decision_id = decision_id
     response.plan = plan_payload
     response.tool_results = tool_results
@@ -799,6 +818,7 @@ async def execute_agent(
 
     relevance_score = None
     factuality_score = None
+    evaluation_error = None
     if result.success and built_context["references"]:
         try:
             validation_messages = [
@@ -825,8 +845,9 @@ async def execute_agent(
                 scores = _json.loads(_match.group())
                 relevance_score = scores.get("relevance")
                 factuality_score = scores.get("factuality")
-        except Exception:
-            pass
+        except Exception as exc:
+            evaluation_error = {"type": type(exc).__name__, "message": str(exc)}
+            logger.debug(f"agent output evaluation failed trace_id={trace_id}: {exc}")
     latency_ms = (time.perf_counter() - start_time) * 1000
     completed_at = datetime.now(timezone.utc)
     review_report = None
@@ -859,7 +880,7 @@ async def execute_agent(
                 "retrieval_chunks": built_context["chunk_count"],
                 "retrieval_latency_ms": retrieval_debug.get("latency_ms", 0.0),
             },
-            "agent_metadata": result.metadata,
+            "agent_metadata": {**(result.metadata or {}), "evaluation_error": evaluation_error},
             "filters": req.filters,
         },
         error_message=None if result.success else result.output,

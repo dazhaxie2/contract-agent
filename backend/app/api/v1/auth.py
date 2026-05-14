@@ -1,10 +1,11 @@
 """认证API"""
 
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_read_db, get_write_db
@@ -66,16 +67,8 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_write_db
     if existing:
         raise HTTPException(status_code=409, detail="用户名或邮箱已存在")
 
-    tenant_user_count = int(
-        (
-            await db.scalar(
-                select(func.count()).select_from(User).where(User.tenant_id == req.tenant_id)
-            )
-        )
-        or 0
-    )
     hashed = get_password_hash(req.password)
-    role = Roles.ADMIN if tenant_user_count == 0 else Roles.VIEWER
+    role = Roles.VIEWER
     now = datetime.now(timezone.utc)
     user = User(
         username=req.username,
@@ -102,13 +95,30 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_write_db
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh_token(refresh_token: str):
+async def refresh_token(refresh_token: str, db: AsyncSession = Depends(get_read_db)):
     """刷新Token"""
     payload = decode_token(refresh_token)
     if not payload or payload.get("type") != "refresh":
         raise HTTPException(401, "无效的刷新令牌")
 
-    token_data = {k: v for k, v in payload.items() if k not in ("exp", "type")}
+    try:
+        user_uuid = uuid.UUID(str(payload.get("sub", "")))
+    except (TypeError, ValueError):
+        raise HTTPException(401, "无效的刷新令牌") from None
+
+    tenant_id = payload.get("tenant_id") or "default"
+    user = await db.scalar(select(User).where(User.id == user_uuid, User.tenant_id == tenant_id))
+    if not user:
+        raise HTTPException(401, "用户不存在")
+    if not user.is_active:
+        raise HTTPException(403, "用户已停用")
+
+    token_data = {
+        "sub": str(user.id),
+        "username": user.username,
+        "role": user.role,
+        "tenant_id": user.tenant_id,
+    }
     return TokenResponse(
         access_token=create_access_token(token_data),
         refresh_token=create_refresh_token(token_data),
@@ -121,8 +131,6 @@ async def current_user(request: Request, db: AsyncSession = Depends(get_read_db)
     user = None
     if user_id:
         try:
-            import uuid
-
             user = await db.scalar(select(User).where(User.id == uuid.UUID(user_id)))
         except (TypeError, ValueError):
             user = None

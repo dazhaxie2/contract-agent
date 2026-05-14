@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Integer, Float, DateTime, Text, Index, JSON, Uuid
+from sqlalchemy import String, Integer, Float, DateTime, Text, Index, JSON, Uuid, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -51,6 +51,40 @@ class AgentExecution(Base):
         Index("idx_exec_tenant_status", "tenant_id", "status"),
         Index("idx_exec_user_time", "user_id", "created_at"),
         Index("idx_exec_task_type", "task_type", "created_at"),
+    )
+
+
+class AgentDecision(Base):
+    """Persisted plan/confirmation record for Plan -> Confirm -> Execute."""
+
+    __tablename__ = "agent_decisions"
+
+    decision_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    session_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
+    task_type: Mapped[str] = mapped_column(String(64), nullable=False, default="contract_review")
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    filters: Mapped[dict] = mapped_column(JSON, default=dict)
+    intent_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    steps: Mapped[list] = mapped_column(JSON, default=list)
+    requires_confirmation: Mapped[bool] = mapped_column(Boolean, default=True)
+    estimated_changes: Mapped[list] = mapped_column(JSON, default=list)
+    context: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="planned")
+    user_confirmation: Mapped[dict] = mapped_column(JSON, default=dict)
+    execution_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
+    trace_id: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+    __table_args__ = (
+        Index("idx_decision_tenant_status", "tenant_id", "status"),
+        Index("idx_decision_user_time", "user_id", "created_at"),
+        Index("idx_decision_expires", "expires_at"),
     )
 
 

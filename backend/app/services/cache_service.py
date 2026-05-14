@@ -57,8 +57,8 @@ class EmbeddingCache:
             data = await client.get(key)
             if data:
                 return json.loads(data)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"embedding cache read failed: {exc}")
         return None
 
     async def set(self, text: str, model: str, embedding: list[float], ttl: int = 3600) -> None:
@@ -68,8 +68,8 @@ class EmbeddingCache:
         key = _cache_key("emb", model, text)
         try:
             await client.setex(key, ttl, json.dumps(embedding))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"embedding cache write failed: {exc}")
 
 
 class RetrievalCache:
@@ -82,8 +82,8 @@ class RetrievalCache:
             data = await client.get(key)
             if data:
                 return json.loads(data)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"retrieval cache read failed: {exc}")
         return None
 
     async def set(self, query: str, tenant_id: str, top_k: int, results: list[dict], ttl: int = 300) -> None:
@@ -93,8 +93,8 @@ class RetrievalCache:
         key = _cache_key("rag", tenant_id, str(top_k), query)
         try:
             await client.setex(key, ttl, json.dumps(results, ensure_ascii=False))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"retrieval cache write failed: {exc}")
 
 
 class ContextCache:
@@ -105,7 +105,8 @@ class ContextCache:
         key = _cache_key("ctx", tenant_id, session_id)
         try:
             return await client.get(key)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"context cache read failed: {exc}")
             return None
 
     async def set(self, session_id: str, tenant_id: str, context: str, ttl: int = 300) -> None:
@@ -115,8 +116,8 @@ class ContextCache:
         key = _cache_key("ctx", tenant_id, session_id)
         try:
             await client.setex(key, ttl, context)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"context cache write failed: {exc}")
 
 
 embedding_cache = EmbeddingCache()

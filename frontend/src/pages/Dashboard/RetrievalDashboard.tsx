@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Card, Col, Row, Space, Statistic, Table, Typography } from 'antd';
-import { Column } from '@ant-design/charts';
 
+import { SimpleBarChart } from '../../components/Charts/SimpleCharts';
 import { dashboardApi, RetrievalMetrics } from '../../services/api';
 
 const { Title, Text } = Typography;
@@ -91,7 +91,7 @@ const RetrievalDashboard: React.FC = () => {
         <Row gutter={[16, 16]}>
           <Col xs={24} lg={12}>
             <Card title="质量指标对比" loading={loading && !metrics}>
-              <Column data={chartData} xField="metric" yField="value" height={260} />
+              <SimpleBarChart data={chartData.map((item) => ({ label: item.metric, value: item.value }))} height={260} />
             </Card>
           </Col>
           <Col xs={24} lg={12}>
@@ -116,4 +116,3 @@ const RetrievalDashboard: React.FC = () => {
 };
 
 export default RetrievalDashboard;
-

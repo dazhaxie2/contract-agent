@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Button, Card, Col, Empty, Form, Input, Modal, Row, Select, Slider, Space, Statistic, Table, Tag, Typography, message } from 'antd';
 import { ExperimentOutlined, PauseOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
-import { Column } from '@ant-design/charts';
 
+import { SimpleBarChart } from '../../components/Charts/SimpleCharts';
 import { ABTest, ModelConfig, modelApi } from '../../services/api';
 
 const { Title, Text } = Typography;
@@ -164,14 +164,9 @@ const ABTestPanel: React.FC = () => {
       )}
 
       <Card title="效果对比" size="small">
-        <Column
-          data={comparisonData}
-          xField="metric"
-          yField="value"
-          seriesField="group"
-          isGroup
+        <SimpleBarChart
+          data={comparisonData.map((item) => ({ label: item.metric, group: item.group, value: item.value }))}
           height={300}
-          label={{ position: 'middle', style: { fill: '#fff' } }}
         />
       </Card>
 

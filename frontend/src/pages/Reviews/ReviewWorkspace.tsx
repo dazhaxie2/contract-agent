@@ -147,11 +147,11 @@ const ReviewWorkspace: React.FC = () => {
   const selectedFile = useMemo(() => uploadItemToFile(fileList[0]), [fileList]);
   const report = execution?.review_report;
 
+  const createMessageId = (index: number) =>
+    window.crypto?.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${index}`;
+
   const addMessage = (role: ChatMessage['role'], content: string, plan?: AgentPlan) => {
-    setChatMessages((items) => [
-      ...items,
-      { id: `${Date.now()}-${Math.random()}`, role, content, plan },
-    ]);
+    setChatMessages((items) => [...items, { id: createMessageId(items.length), role, content, plan }]);
   };
 
   const refreshHistory = async () => {

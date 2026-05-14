@@ -9,6 +9,47 @@ const api = axios.create({
   },
 });
 
+const refreshClient = axios.create({
+  baseURL: '/api/v1',
+  timeout: 30000,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+let refreshPromise: Promise<string | null> | null = null;
+
+function clearAuthAndRedirect() {
+  localStorage.removeItem('access_token');
+  localStorage.removeItem('refresh_token');
+  localStorage.removeItem('tenant_id');
+  window.location.href = '/login';
+}
+
+async function refreshAccessToken(): Promise<string | null> {
+  const refreshToken = localStorage.getItem('refresh_token');
+  if (!refreshToken) {
+    return null;
+  }
+
+  if (!refreshPromise) {
+    refreshPromise = refreshClient
+      .post<LoginResponse>('/auth/refresh', null, { params: { refresh_token: refreshToken } })
+      .then((response) => {
+        const token = response.data.access_token;
+        localStorage.setItem('access_token', token);
+        localStorage.setItem('refresh_token', response.data.refresh_token);
+        return token;
+      })
+      .catch(() => null)
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+
+  return refreshPromise;
+}
+
 api.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
     const token = localStorage.getItem('access_token');
@@ -38,14 +79,28 @@ api.interceptors.response.use(
     }
     return response;
   },
-  (error: AxiosError<{ detail?: string }>) => {
+  async (error: AxiosError<{ detail?: string }>) => {
     if (error.response) {
       const { status, data } = error.response;
+      const originalConfig = error.config as (InternalAxiosRequestConfig & { _retry?: boolean }) | undefined;
+      const requestUrl = originalConfig?.url || '';
       switch (status) {
         case 401:
-          localStorage.removeItem('access_token');
-          window.location.href = '/login';
-          break;
+          if (
+            originalConfig &&
+            !originalConfig._retry &&
+            !requestUrl.includes('/auth/login') &&
+            !requestUrl.includes('/auth/refresh')
+          ) {
+            const newToken = await refreshAccessToken();
+            if (newToken) {
+              originalConfig._retry = true;
+              originalConfig.headers.Authorization = `Bearer ${newToken}`;
+              return api(originalConfig);
+            }
+          }
+          clearAuthAndRedirect();
+          return Promise.reject(error);
         case 403:
           message.error('Permission denied');
           break;

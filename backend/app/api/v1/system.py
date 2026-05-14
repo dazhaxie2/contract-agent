@@ -19,7 +19,7 @@ from app.core.database import (
     get_read_db,
 )
 from app.middleware.circuit_breaker import get_circuit_breaker
-from app.models.agent import AgentExecution
+from app.models.agent import AgentDecision, AgentExecution
 from app.models.document import Document
 from app.models.ingestion import IngestionJob
 from app.models.retrieval import RetrievalLog
@@ -152,10 +152,16 @@ def _has_citation(item: dict[str, Any]) -> bool:
     return any(isinstance(ref, dict) and (ref.get("citation_id") or ref.get("citation_code")) for ref in refs)
 
 
-def _workbench_metrics(exec_rows: list[AgentExecution]) -> dict[str, Any]:
+def _workbench_metrics(exec_rows: list[AgentExecution], decision_rows: list[AgentDecision] | None = None) -> dict[str, Any]:
     planned_rows = [row for row in exec_rows if (row.result_metadata or {}).get("decision_id")]
+    decisions = decision_rows if decision_rows is not None else []
     contract_rows = [row for row in exec_rows if row.task_type == "contract_review"]
-    plan_success = sum(1 for row in planned_rows if row.status == "completed")
+    if decisions:
+        plan_total = len(decisions)
+        plan_success = sum(1 for row in decisions if row.status == "executed")
+    else:
+        plan_total = len(planned_rows)
+        plan_success = sum(1 for row in planned_rows if row.status == "completed")
     review_failures = sum(1 for row in contract_rows if row.status == "failed")
     review_latencies = [float(row.latency_ms or 0.0) for row in contract_rows if row.latency_ms is not None]
     feedback_scores = [int(row.user_feedback) for row in exec_rows if row.user_feedback is not None]
@@ -191,8 +197,8 @@ def _workbench_metrics(exec_rows: list[AgentExecution]) -> dict[str, Any]:
     avg_review_latency = statistics.mean(review_latencies) if review_latencies else 0.0
     avg_feedback = statistics.mean(feedback_scores) if feedback_scores else 0.0
     return {
-        "plan_success_rate": _ratio(plan_success, len(planned_rows)),
-        "planned_executions": len(planned_rows),
+        "plan_success_rate": _ratio(plan_success, plan_total),
+        "planned_executions": plan_total,
         "tool_failure_rate": _ratio(tool_failed, tool_total),
         "tool_calls_total": tool_total,
         "citation_coverage_rate": _ratio(risk_with_citation, risk_total),
@@ -405,7 +411,15 @@ async def get_metrics_overview(db: AsyncSession = Depends(get_read_db)):
                 .limit(5000)
             )
         ).all()
-        workbench_payload = _workbench_metrics(list(metric_rows))
+        decision_rows = (
+            await db.scalars(
+                select(AgentDecision)
+                .where(AgentDecision.created_at >= last_24h)
+                .order_by(AgentDecision.created_at.desc())
+                .limit(5000)
+            )
+        ).all()
+        workbench_payload = _workbench_metrics(list(metric_rows), list(decision_rows))
         retrieval_metrics_payload = await _load_recent_retrieval_metrics(db, last_24h)
     except Exception:
         total_exec = 0

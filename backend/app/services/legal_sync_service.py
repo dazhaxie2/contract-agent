@@ -147,8 +147,7 @@ class LegalSyncService:
             try:
                 await task
             except asyncio.CancelledError:
-                pass
+                logger.debug("legal source scheduler stopped")
 
 
 legal_sync_service = LegalSyncService()
-

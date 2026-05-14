@@ -55,8 +55,8 @@ class KafkaConnector:
             logger.warning(f"Kafka producer start failed: {exc}")
             try:
                 await producer.stop()
-            except Exception:
-                pass
+            except Exception as stop_exc:
+                logger.debug(f"Kafka producer cleanup failed: {stop_exc}")
             return False
 
     async def stop(self) -> None:
@@ -109,8 +109,8 @@ class KafkaConnector:
             finally:
                 try:
                     await consumer.stop()
-                except Exception:
-                    pass
+                except Exception as stop_exc:
+                    logger.debug(f"Kafka consumer cleanup failed topic={topic}: {stop_exc}")
 
         task = asyncio.create_task(_consume_loop(), name=f"kafka-consumer:{topic}")
         self._consumer_tasks.append(task)
@@ -125,4 +125,3 @@ class KafkaConnector:
 
 
 kafka_connector = KafkaConnector()
-

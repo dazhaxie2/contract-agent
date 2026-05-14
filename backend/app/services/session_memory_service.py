@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Iterable
 
+from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -206,8 +207,8 @@ class SessionMemoryService:
                 updates["focus_areas"] = parsed["focus_areas"]
             if updates:
                 await self.update_user_profile(db, user_id, tenant_id, updates)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"profile extraction failed user={user_id} tenant={tenant_id}: {exc}")
 
     async def get_profile_context(
         self,

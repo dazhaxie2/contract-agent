@@ -8,10 +8,11 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select, text
 
-from app.core.database import ReadSessionLocal
+from app.core.database import ReadSessionLocal, WriteSessionLocal
 from app.core.config import settings
 from app.core.security import create_access_token
-from app.models.agent import AgentExecution
+from app.models.agent import AgentDecision, AgentExecution
+from app.models.user import User
 from app.services.connectors.legal_source_connector import LegalSourceDocument
 from app.services.llm_service import llm_service
 
@@ -84,9 +85,24 @@ async def test_models_crud_and_compat(app_client: AsyncClient, auth_headers: dic
         json={"username": "viewer", "password": "password123"},
     )
     assert viewer_login_resp.status_code == 200, viewer_login_resp.text
-    viewer_headers = {"Authorization": f"Bearer {unwrap_json(viewer_login_resp)['access_token']}"}
+    viewer_login_data = unwrap_json(viewer_login_resp)
+    viewer_headers = {"Authorization": f"Bearer {viewer_login_data['access_token']}"}
     viewer_create_resp = await app_client.post("/api/v1/models", json=payload, headers=viewer_headers)
     assert viewer_create_resp.status_code == 403
+
+    async with WriteSessionLocal() as session:
+        viewer = await session.scalar(select(User).where(User.username == "viewer"))
+        assert viewer is not None
+        viewer.is_active = False
+        await session.commit()
+
+    disabled_resp = await app_client.get("/api/v1/auth/me", headers=viewer_headers)
+    assert disabled_resp.status_code == 403
+    disabled_refresh_resp = await app_client.post(
+        "/api/v1/auth/refresh",
+        params={"refresh_token": viewer_login_data["refresh_token"]},
+    )
+    assert disabled_refresh_resp.status_code == 403
 
     create_resp = await app_client.post("/api/v1/models", json=payload, headers=auth_headers)
     assert create_resp.status_code == 200, create_resp.text
@@ -287,7 +303,10 @@ async def test_agent_plan_confirm_execute_and_feedback_regression(
 
     async with ReadSessionLocal() as session:
         after_plan_count = await session.scalar(select(func.count()).select_from(AgentExecution))
+        decision = await session.get(AgentDecision, plan_payload["decision_id"])
     assert after_plan_count == before_count
+    assert decision is not None
+    assert decision.status == "planned"
 
     rejected_resp = await app_client.post(
         f"/api/v1/agents/decisions/{plan_payload['decision_id']}/execute",
@@ -332,6 +351,12 @@ async def test_agent_plan_confirm_execute_and_feedback_regression(
     detail_payload = unwrap_json(detail_resp)
     assert detail_payload["decision_id"] == plan_payload["decision_id"]
     assert detail_payload["plan"]["decision_id"] == plan_payload["decision_id"]
+
+    async with ReadSessionLocal() as session:
+        executed_decision = await session.get(AgentDecision, plan_payload["decision_id"])
+    assert executed_decision is not None
+    assert executed_decision.status == "executed"
+    assert str(executed_decision.execution_id) == execute_payload["execution_id"]
 
     for export_format in ["markdown", "docx", "pdf"]:
         export_resp = await app_client.get(
@@ -385,28 +410,12 @@ async def test_agent_plan_confirm_execute_and_feedback_regression(
 
 
 @pytest.mark.asyncio
-async def test_contract_workbench_api_e2e_acceptance(app_client: AsyncClient, monkeypatch) -> None:
+async def test_contract_workbench_api_e2e_acceptance(
+    app_client: AsyncClient, auth_headers: dict[str, str], monkeypatch
+) -> None:
     monkeypatch.setattr(settings.rag, "enable_crag", False)
 
-    register_resp = await app_client.post(
-        "/api/v1/auth/register",
-        json={
-            "username": "admin",
-            "email": "admin@example.com",
-            "password": "password123",
-            "full_name": "Admin",
-            "tenant_id": "default",
-        },
-    )
-    assert register_resp.status_code == 200, register_resp.text
-
-    login_resp = await app_client.post(
-        "/api/v1/auth/login",
-        json={"username": "admin", "password": "password123"},
-    )
-    assert login_resp.status_code == 200, login_resp.text
-    login_payload = unwrap_json(login_resp)
-    headers = {"Authorization": f"Bearer {login_payload['access_token']}"}
+    headers = auth_headers
 
     contract_text = (
         "采购合同。付款条款：甲方应在验收合格后十个工作日内付款。"
@@ -805,7 +814,7 @@ async def test_dashboard_compat_and_alembic_version(app_client: AsyncClient, aut
             version_num = await session.scalar(text("SELECT version_num FROM alembic_version LIMIT 1"))
         except Exception:
             version_num = None
-    assert version_num in {None, "20260406_0001", "20260406_0002", "20260406_0003"}
+    assert version_num in {None, "20260406_0001", "20260406_0002", "20260406_0003", "20260514_0004", "20260514_0005"}
 
 
 @pytest.mark.asyncio

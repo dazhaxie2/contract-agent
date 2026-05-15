@@ -27,7 +27,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         tenant_id = get_tenant_id()
         start_time = time.perf_counter()
 
-        # 安全过滤请求头
+        # 安全过滤请求头（敏感字段脱敏）
         safe_headers = {
             k: ("***" if k.lower() in self.SENSITIVE_HEADERS else v)
             for k, v in request.headers.items()
@@ -45,6 +45,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             "user_agent": request.headers.get("user-agent", ""),
             "content_type": request.headers.get("content-type", ""),
             "content_length": request.headers.get("content-length", "0"),
+            "headers": safe_headers,
         }
         logger.info(json.dumps(request_log, ensure_ascii=False))
 

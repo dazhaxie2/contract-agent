@@ -5,7 +5,6 @@ L1本地内存 -> L2 Redis分布式缓存，支持智能缓存策略
 
 import hashlib
 import time
-import json
 from collections import OrderedDict
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request

@@ -6,13 +6,11 @@ import asyncio
 import hashlib
 from dataclasses import dataclass
 from typing import Any
-from uuid import UUID
 
 from loguru import logger
 
 from app.core.config import settings
 from app.core.database import WriteSessionLocal
-from app.models.ingestion import IngestionJob
 from app.services.connectors import legal_source_connector
 from app.services.ingestion_orchestrator import ingestion_orchestrator
 from app.services.ingestion_service import ingestion_service

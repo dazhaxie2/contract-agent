@@ -132,7 +132,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             REQUEST_LATENCY.labels(method=method, path=path).observe(duration)
 
             return response
-        except Exception as exc:
+        except Exception:
             duration = time.perf_counter() - start_time
             REQUEST_COUNT.labels(
                 method=method, path=path, status_code=500, tenant_id=tenant_id,

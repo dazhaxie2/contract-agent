@@ -5,7 +5,6 @@
 
 import re
 import uuid
-from typing import Optional
 
 from app.core.config import settings
 
@@ -107,12 +106,6 @@ class DocumentChunker:
     def _contract_chunk(self, text: str) -> list[ChunkResult]:
         """合同分块 - 按条款分割"""
         chunks = []
-
-        # 合同常见结构模式
-        patterns = [
-            re.compile(r'^(?:第[一二三四五六七八九十百千]+条|第\d+条|[\d.]+)\s', re.MULTILINE),
-            re.compile(r'^(?:甲方|乙方|丙方|丁方)[:：]', re.MULTILINE),
-        ]
 
         # 先尝试按条款分割
         article_pattern = re.compile(

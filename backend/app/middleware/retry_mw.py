@@ -4,7 +4,6 @@
 """
 
 import asyncio
-import time
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response

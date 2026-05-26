@@ -10,7 +10,6 @@ env:
   REGISTRY: ghcr.io
   BACKEND_IMAGE: ghcr.io/${{ github.repository }}/backend
   FRONTEND_IMAGE: ghcr.io/${{ github.repository }}/frontend
-  HIDB_TEST_IMAGE: postgres:16
 
 jobs:
   lint:
@@ -52,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       hidb:
-        image: ${{ env.HIDB_TEST_IMAGE }}
+        image: postgres:16
         env:
           POSTGRES_DB: test_db
           POSTGRES_USER: hidb

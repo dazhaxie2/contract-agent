@@ -25,6 +25,7 @@ const typeLabels: Record<string, string> = {
   regulation: '法规',
   case: '案例',
   guide: '指南',
+  enterprise_rule: '企业制度',
 };
 
 const statusColor: Record<string, string> = {

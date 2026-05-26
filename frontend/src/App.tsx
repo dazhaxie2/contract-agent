@@ -8,6 +8,7 @@ const LoginPage = lazy(() => import('./pages/Auth/LoginPage'));
 const ChatPage = lazy(() => import('./pages/Chat/ChatPage'));
 const ReviewWorkspace = lazy(() => import('./pages/Reviews/ReviewWorkspace'));
 const DocumentLibrary = lazy(() => import('./pages/Documents/DocumentLibrary'));
+const EnterpriseRules = lazy(() => import('./pages/Knowledge/EnterpriseRules'));
 const SystemDashboard = lazy(() => import('./pages/Dashboard/SystemDashboard'));
 const AgentTraceDashboard = lazy(() => import('./pages/Dashboard/AgentTraceDashboard'));
 const RetrievalDashboard = lazy(() => import('./pages/Dashboard/RetrievalDashboard'));
@@ -38,6 +39,7 @@ const App: React.FC = () => (
           <Route path="chat" element={<ChatPage />} />
           <Route path="reviews" element={<ReviewWorkspace />} />
           <Route path="documents" element={<DocumentLibrary />} />
+          <Route path="knowledge/enterprise-rules" element={<EnterpriseRules />} />
 
           <Route path="dashboard" element={<SystemDashboard />} />
           <Route path="dashboard/agent-trace" element={<AgentTraceDashboard />} />

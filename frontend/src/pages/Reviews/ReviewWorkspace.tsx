@@ -13,6 +13,7 @@ import {
   Rate,
   Row,
   Select,
+  Skeleton,
   Space,
   Spin,
   Table,
@@ -115,6 +116,35 @@ function uploadItemToFile(item?: UploadFile): File | undefined {
   return (item?.originFileObj as File | undefined) || (item as unknown as File | undefined);
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// 从条款摘录/问题里提取短词（标点/空格切分），用于在引用原文里做子串高亮。
+// 过滤过长 token，避免把无标点的整段当成一个词。
+function extractHighlightTerms(source?: string): string[] {
+  if (!source) return [];
+  const tokens = source
+    .split(/[^A-Za-z0-9一-鿿]+/)
+    .filter((token) => token.length >= 2 && token.length <= 6);
+  return Array.from(new Set(tokens)).slice(0, 16);
+}
+
+function highlightExcerpt(text: string, terms: string[]): React.ReactNode {
+  if (!text || !terms.length) return text;
+  const pattern = new RegExp(`(${terms.map(escapeRegExp).join('|')})`, 'g');
+  const termSet = new Set(terms);
+  return text.split(pattern).map((part, index) =>
+    termSet.has(part) ? (
+      <mark key={index} className="citation-highlight">
+        {part}
+      </mark>
+    ) : (
+      <React.Fragment key={index}>{part}</React.Fragment>
+    ),
+  );
+}
+
 const ReviewWorkspace: React.FC = () => {
   const [searchParams] = useSearchParams();
   const [title, setTitle] = useState('');
@@ -137,6 +167,7 @@ const ReviewWorkspace: React.FC = () => {
   const [history, setHistory] = useState<AgentExecution[]>([]);
   const [citation, setCitation] = useState<CitationDetail | null>(null);
   const [citationOpen, setCitationOpen] = useState(false);
+  const [citationTerms, setCitationTerms] = useState<string[]>([]);
   const [feedbackScore, setFeedbackScore] = useState(0);
   const [feedbackComment, setFeedbackComment] = useState('');
   const [busy, setBusy] = useState(false);
@@ -404,10 +435,11 @@ const ReviewWorkspace: React.FC = () => {
     setFeedbackComment('');
   };
 
-  const openCitation = async (id?: string) => {
+  const openCitation = async (id?: string, terms: string[] = []) => {
     if (!id) return;
     setCitationOpen(true);
     setCitation(null);
+    setCitationTerms(terms);
     setCitation(await citationApi.get(id));
   };
 
@@ -499,8 +531,11 @@ const ReviewWorkspace: React.FC = () => {
 
   const renderRisk = (item: ReviewRiskItem, index: number) => {
     const uncertain = item.severity === 'uncertain' || !item.references?.some((ref) => ref.citation_id);
+    const severityClass = ['high', 'medium', 'low', 'uncertain'].includes(item.severity)
+      ? `severity-${item.severity}`
+      : '';
     return (
-      <div key={`${item.issue}-${index}`} className="risk-item">
+      <div key={`${item.issue}-${index}`} className={`risk-item ${severityClass}`}>
         <Space style={{ marginBottom: 8 }} wrap>
           <Tag color={severityColor[item.severity] || 'blue'}>{riskText(item.severity)}</Tag>
           {uncertain ? <Tag>依据不足</Tag> : null}
@@ -517,22 +552,36 @@ const ReviewWorkspace: React.FC = () => {
           <Text type="secondary">法律依据：</Text>
           {item.legal_basis || '未检索到可验证引用依据'}
         </Paragraph>
+        {item.enterprise_basis ? (
+          <Paragraph>
+            <Text type="secondary">企业制度依据：</Text>
+            <Tag color="purple">制度</Tag>
+            {item.enterprise_basis}
+          </Paragraph>
+        ) : null}
         <Paragraph>
           <Text type="secondary">修改建议：</Text>
           {item.recommendation}
         </Paragraph>
         <Space wrap>
-          {(item.references || []).map((ref) => (
-            <Button
-              key={ref.citation_id || ref.chunk_id}
-              size="small"
-              icon={<LinkOutlined />}
-              onClick={() => openCitation(ref.citation_id)}
-              disabled={!ref.citation_id}
-            >
-              {ref.citation_code || ref.doc_title || '引用依据'}
-            </Button>
-          ))}
+          {(item.references || []).map((ref) => {
+            const isEnterprise = ref.basis_kind === 'enterprise';
+            return (
+              <Button
+                key={ref.citation_id || ref.chunk_id}
+                size="small"
+                icon={<LinkOutlined />}
+                onClick={() =>
+                  openCitation(ref.citation_id, extractHighlightTerms(`${item.clause_excerpt || ''} ${item.issue || ''}`))
+                }
+                disabled={!ref.citation_id}
+                style={isEnterprise ? { borderColor: '#722ed1', color: '#722ed1' } : undefined}
+              >
+                {isEnterprise ? '制度 · ' : ''}
+                {ref.citation_code || ref.doc_title || '引用依据'}
+              </Button>
+            );
+          })}
         </Space>
       </div>
     );
@@ -732,7 +781,11 @@ const ReviewWorkspace: React.FC = () => {
         </Space>
 
         {!execution ? (
-          <Empty description="确认计划并完成审查后在这里查看风险清单" />
+          busy ? (
+            <Skeleton active paragraph={{ rows: 6 }} />
+          ) : (
+            <Empty description="确认计划并完成审查后在这里查看风险清单" />
+          )
         ) : (
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Alert
@@ -823,10 +876,10 @@ const ReviewWorkspace: React.FC = () => {
               <Descriptions.Item label="文档 ID">{citation.document_id || '-'}</Descriptions.Item>
               <Descriptions.Item label="Chunk ID">{citation.chunk_id || '-'}</Descriptions.Item>
             </Descriptions>
-            <Paragraph className="citation-excerpt">{citation.excerpt}</Paragraph>
+            <Paragraph className="citation-excerpt">{highlightExcerpt(citation.excerpt, citationTerms)}</Paragraph>
           </Space>
         ) : (
-          <Empty description="正在加载引用" />
+          <Skeleton active paragraph={{ rows: 5 }} />
         )}
       </Drawer>
     </Space>

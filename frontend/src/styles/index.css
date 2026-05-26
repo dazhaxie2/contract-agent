@@ -126,10 +126,29 @@ body {
 
 .risk-item {
   padding: 16px;
+  margin-bottom: 12px;
   border: 1px solid #f0f0f0;
   border-left: 4px solid var(--color-warning);
   border-radius: 8px;
   background: #fff;
+}
+
+.risk-item.severity-high {
+  border-left-color: var(--color-error);
+  background: #fff7f6;
+}
+
+.risk-item.severity-medium {
+  border-left-color: var(--color-warning);
+}
+
+.risk-item.severity-low {
+  border-left-color: var(--color-success);
+}
+
+.risk-item.severity-uncertain {
+  border-left-color: #8c8c8c;
+  background: #fafafa;
 }
 
 .chunk-preview,
@@ -138,6 +157,13 @@ body {
   border: 1px solid #f0f0f0;
   border-radius: 8px;
   background: #fafafa;
+}
+
+.citation-highlight {
+  background: #fff1b8;
+  padding: 0 2px;
+  border-radius: 2px;
+  color: inherit;
 }
 
 .result-markdown {

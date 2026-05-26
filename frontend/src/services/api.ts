@@ -537,27 +537,33 @@ export const documentApi = {
 
 // ===================== Review / Agent APIs =====================
 
+export interface ReviewReference {
+  ref_id?: number;
+  citation_id?: string;
+  citation_code?: string;
+  doc_title?: string;
+  hierarchy?: string;
+  chunk_id?: string;
+  doc_type?: string;
+  basis_kind?: 'legal' | 'enterprise' | 'other' | string;
+}
+
 export interface ReviewRiskItem {
   severity: 'high' | 'medium' | 'low' | 'uncertain' | string;
   clause_excerpt: string;
   issue: string;
   legal_basis: string;
+  enterprise_basis?: string;
   recommendation: string;
   confidence: number;
-  references?: {
-    ref_id?: number;
-    citation_id?: string;
-    citation_code?: string;
-    doc_title?: string;
-    hierarchy?: string;
-    chunk_id?: string;
-  }[];
+  references?: ReviewReference[];
 }
 
 export interface ReviewReport {
   overall_risk: 'high' | 'medium' | 'low' | 'uncertain' | string;
   summary: string;
   risk_items: ReviewRiskItem[];
+  enterprise_rule_count?: number;
   generated_from?: string;
 }
 

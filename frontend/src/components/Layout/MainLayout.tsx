@@ -9,6 +9,7 @@ import {
   MessageOutlined,
   MonitorOutlined,
   RobotOutlined,
+  SafetyCertificateOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../../store';
@@ -30,6 +31,11 @@ const menuItems = [
     key: '/documents',
     icon: <FileTextOutlined />,
     label: '文档库',
+  },
+  {
+    key: '/knowledge/enterprise-rules',
+    icon: <SafetyCertificateOutlined />,
+    label: '企业制度库',
   },
   {
     key: 'dashboard-group',
@@ -96,7 +102,14 @@ const MainLayout: React.FC = () => {
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} theme="dark" width={240}>
+      <Sider
+        collapsible
+        collapsed={collapsed}
+        onCollapse={setCollapsed}
+        breakpoint="lg"
+        theme="dark"
+        width={240}
+      >
         <div className="layout-logo">
           <Typography.Title level={4} style={{ color: '#fff', margin: 0, fontSize: collapsed ? 14 : 16 }}>
             {collapsed ? 'CA' : '合同合规 Agent'}

@@ -45,8 +45,8 @@ jobs:
       - name: Ruff lint
         run: cd backend && ruff check app/
 
-      - name: Validate test set JSON
-        run: python -c "import json; data=json.load(open('backend/tests/fixtures/evaluation_test_set.json')); print(f'{len(data)} test cases loaded')"
+      - name: Validate evaluation test set structure
+        run: cd backend && python scripts/validate_evaluation_set.py
 
   evaluate:
     name: Agent Evaluation

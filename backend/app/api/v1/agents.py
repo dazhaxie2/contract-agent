@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.orchestrator import orchestrator_agent
 from app.agents.tool_catalog import tool_catalog_by_domain
 from app.core.database import get_read_db, get_write_db
+from app.core.doc_types import ENTERPRISE_RULE, basis_kind
 from app.core.request_context import RequestContext, resolve_request_context
 from app.models.agent import AgentDecision, AgentExecution, AgentStep
 from app.models.retrieval import RetrievalLog
@@ -39,6 +40,7 @@ from app.services.session_memory_service import session_memory_service
 router = APIRouter()
 
 DECISION_TTL_SECONDS = 60 * 60
+ENTERPRISE_RULE_TOP_K = 4
 
 
 def get_request_context(request: Request) -> RequestContext:
@@ -113,6 +115,14 @@ def _first_sentence(text: str, limit: int = 360) -> str:
     return normalized[:limit].rstrip() + "..."
 
 
+def _basis_join(refs: list[dict]) -> str:
+    return "；".join(
+        str(item.get("citation_code") or item.get("doc_title") or item.get("chunk_id"))
+        for item in refs
+        if item.get("citation_code") or item.get("doc_title") or item.get("chunk_id")
+    )
+
+
 def _build_contract_review_report(result_text: str, references: list[dict], query: str) -> dict[str, Any]:
     citation_refs = [
         {
@@ -122,14 +132,22 @@ def _build_contract_review_report(result_text: str, references: list[dict], quer
             "doc_title": ref.get("doc_title"),
             "hierarchy": ref.get("hierarchy"),
             "chunk_id": ref.get("chunk_id"),
+            "doc_type": ref.get("doc_type"),
+            "basis_kind": basis_kind(ref.get("doc_type")),
         }
         for ref in references
         if ref.get("citation_id") or ref.get("citation_code")
     ]
     has_citation = bool(citation_refs)
+    legal_refs = [item for item in citation_refs if item["basis_kind"] == "legal"]
+    enterprise_refs = [item for item in citation_refs if item["basis_kind"] == "enterprise"]
     severity = _severity_from_text(result_text)
     confidence = 0.72 if has_citation else 0.35
     risk_title = "合同审查结论" if has_citation else "不确定：缺少可追溯依据"
+
+    # 法律依据优先取权威法律来源；若没有命中法律来源，回退到全部引用避免空依据
+    legal_basis = _basis_join((legal_refs or citation_refs)[:5]) or "未检索到可验证引用依据"
+    enterprise_basis = _basis_join(enterprise_refs[:5])
 
     return {
         "overall_risk": severity if has_citation else "uncertain",
@@ -139,17 +157,15 @@ def _build_contract_review_report(result_text: str, references: list[dict], quer
                 "severity": severity if has_citation else "uncertain",
                 "clause_excerpt": _first_sentence(query, limit=320),
                 "issue": risk_title,
-                "legal_basis": "；".join(
-                    str(item.get("citation_code") or item.get("doc_title") or item.get("chunk_id"))
-                    for item in citation_refs[:5]
-                )
-                or "未检索到可验证引用依据",
+                "legal_basis": legal_basis,
+                "enterprise_basis": enterprise_basis,
                 "recommendation": _first_sentence(result_text, limit=600)
                 or "建议补充法规依据后再形成正式审查意见",
                 "confidence": confidence,
                 "references": citation_refs[:8],
             }
         ],
+        "enterprise_rule_count": len(enterprise_refs),
         "generated_from": "agent_execution",
     }
 
@@ -179,6 +195,36 @@ def _collect_document_filters(context: dict, filters: dict) -> dict:
         merged["document_ids"] = [str(item) for item in document_ids]
     elif doc_id:
         merged["document_ids"] = [str(doc_id)]
+    return merged
+
+
+async def _merge_enterprise_rules(*, query: str, tenant_id: str, base_results: list) -> list:
+    """额外检索企业自有制度并并入审查上下文。
+
+    企业制度面向整个租户知识库，不受当前合同 doc_id 过滤约束，
+    因此独立发起一次按 doc_type 限定的检索，确保制度依据有机会进入上下文，
+    而不是和法规在同一次召回里相互挤占。
+    """
+    try:
+        rule_hits = await hybrid_retriever.retrieve(
+            query=query,
+            tenant_id=tenant_id,
+            filters={"doc_type": ENTERPRISE_RULE, "effective": True},
+            top_k=ENTERPRISE_RULE_TOP_K,
+        )
+    except Exception as exc:
+        logger.debug(f"enterprise rule retrieval skipped tenant={tenant_id}: {exc}")
+        return base_results
+    if not rule_hits:
+        return base_results
+
+    seen = {item.chunk_id for item in base_results}
+    merged = list(base_results)
+    for hit in rule_hits:
+        if hit.chunk_id in seen:
+            continue
+        seen.add(hit.chunk_id)
+        merged.append(hit)
     return merged
 
 
@@ -362,29 +408,225 @@ def _export_filename(execution: AgentExecution, suffix: str) -> str:
     return f"{stem}.{suffix}"
 
 
-def _docx_bytes(title: str, content: str) -> bytes:
+# 严重度 -> (中文标签, RGB 0-255)
+SEVERITY_LABELS: dict[str, tuple[str, tuple[int, int, int]]] = {
+    "high": ("高风险", (192, 57, 43)),
+    "medium": ("中风险", (202, 138, 4)),
+    "low": ("低风险", (30, 126, 52)),
+    "uncertain": ("依据不足", (107, 114, 128)),
+}
+_BASIS_LABELS = {"legal": "法律", "enterprise": "企业制度"}
+
+
+def _severity_label(value: str | None) -> tuple[str, tuple[int, int, int]]:
+    return SEVERITY_LABELS.get(str(value or ""), (str(value or "未知"), (55, 65, 81)))
+
+
+def _collect_report_refs(report: dict) -> list[dict]:
+    seen: set[str] = set()
+    refs: list[dict] = []
+    for item in report.get("risk_items") or []:
+        for ref in item.get("references") or []:
+            key = str(ref.get("citation_id") or ref.get("citation_code") or ref.get("chunk_id") or "")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            refs.append(ref)
+    return refs
+
+
+def _report_blocks(execution: AgentExecution) -> list[dict]:
+    """把结构化 review_report 拍平成有序排版块；无结构化报告时回退到纯文本。"""
+    metadata = execution.result_metadata or {}
+    report = metadata.get("review_report") if isinstance(metadata, dict) else None
+    blocks: list[dict] = [{"style": "h1", "text": "合同审查报告"}]
+
+    if not isinstance(report, dict) or not report.get("risk_items"):
+        for line in (execution.result or "未生成审查结论").splitlines() or ["未生成审查结论"]:
+            blocks.append({"style": "body", "text": line})
+        return blocks
+
+    overall_label, overall_color = _severity_label(report.get("overall_risk"))
+    blocks.append({"style": "label", "text": f"总体风险：{overall_label}", "color": overall_color})
+    if report.get("summary"):
+        blocks.append({"style": "h2", "text": "审查摘要"})
+        blocks.append({"style": "body", "text": str(report["summary"])})
+
+    blocks.append({"style": "h2", "text": "风险项"})
+    for idx, item in enumerate(report.get("risk_items") or [], start=1):
+        slabel, scolor = _severity_label(item.get("severity"))
+        blocks.append({"style": "h3", "text": f"{idx}. [{slabel}] {item.get('issue') or '审查发现'}", "color": scolor})
+        for field, key in (
+            ("条款摘录", "clause_excerpt"),
+            ("法律依据", "legal_basis"),
+            ("企业制度依据", "enterprise_basis"),
+            ("修改建议", "recommendation"),
+        ):
+            value = item.get(key)
+            if value:
+                blocks.append({"style": "field", "label": field, "text": str(value)})
+        conf = item.get("confidence")
+        if isinstance(conf, (int, float)):
+            blocks.append({"style": "field", "label": "置信度", "text": f"{conf * 100:.0f}%"})
+
+    refs = _collect_report_refs(report)
+    if refs:
+        blocks.append({"style": "h2", "text": "引用依据"})
+        for ref in refs:
+            kind = _BASIS_LABELS.get(str(ref.get("basis_kind")), "其他")
+            code = ref.get("citation_code") or ref.get("doc_title") or ref.get("chunk_id") or ""
+            hier = ref.get("hierarchy") or ""
+            blocks.append({"style": "ref", "text": f"[{kind}] {code} {hier}".strip()})
+    return blocks
+
+
+def _report_markdown(execution: AgentExecution) -> str:
+    metadata = execution.result_metadata or {}
+    report = metadata.get("review_report") if isinstance(metadata, dict) else None
+    if not isinstance(report, dict) or not report.get("risk_items"):
+        return execution.result or ""
+
+    lines = ["# 合同审查报告", "", f"**总体风险：{_severity_label(report.get('overall_risk'))[0]}**", ""]
+    if report.get("summary"):
+        lines += ["## 审查摘要", "", str(report["summary"]), ""]
+    lines += ["## 风险项", ""]
+    for idx, item in enumerate(report.get("risk_items") or [], start=1):
+        lines.append(f"### {idx}. [{_severity_label(item.get('severity'))[0]}] {item.get('issue') or '审查发现'}")
+        lines.append("")
+        for field, key in (
+            ("条款摘录", "clause_excerpt"),
+            ("法律依据", "legal_basis"),
+            ("企业制度依据", "enterprise_basis"),
+            ("修改建议", "recommendation"),
+        ):
+            if item.get(key):
+                lines.append(f"- **{field}**：{item[key]}")
+        conf = item.get("confidence")
+        if isinstance(conf, (int, float)):
+            lines.append(f"- **置信度**：{conf * 100:.0f}%")
+        lines.append("")
+    refs = _collect_report_refs(report)
+    if refs:
+        lines += ["## 引用依据", ""]
+        for ref in refs:
+            kind = _BASIS_LABELS.get(str(ref.get("basis_kind")), "其他")
+            code = ref.get("citation_code") or ref.get("doc_title") or ref.get("chunk_id") or ""
+            hier = ref.get("hierarchy") or ""
+            lines.append(f"- [{kind}] {code} {hier}".rstrip())
+    return "\n".join(lines)
+
+
+def _docx_bytes(blocks: list[dict]) -> bytes:
     from docx import Document as DocxDocument
+    from docx.shared import RGBColor
 
     doc = DocxDocument()
-    doc.add_heading(title, level=1)
-    for block in (content or "").splitlines():
-        doc.add_paragraph(block)
+    for block in blocks:
+        style = block.get("style", "body")
+        text = block.get("text", "")
+        color = block.get("color")
+        if style == "h1":
+            doc.add_heading(text, level=0)
+        elif style == "h2":
+            doc.add_heading(text, level=1)
+        elif style == "h3":
+            heading = doc.add_heading(level=2)
+            run = heading.add_run(text)
+            if color:
+                run.font.color.rgb = RGBColor(*color)
+        elif style == "label":
+            paragraph = doc.add_paragraph()
+            run = paragraph.add_run(text)
+            run.bold = True
+            if color:
+                run.font.color.rgb = RGBColor(*color)
+        elif style == "field":
+            paragraph = doc.add_paragraph()
+            label_run = paragraph.add_run(f"{block.get('label', '')}：")
+            label_run.bold = True
+            paragraph.add_run(text)
+        elif style == "ref":
+            doc.add_paragraph(text, style="List Bullet")
+        else:
+            doc.add_paragraph(text)
     stream = io.BytesIO()
     doc.save(stream)
     return stream.getvalue()
 
 
-def _pdf_bytes(title: str, content: str) -> bytes:
+def _pdf_bytes(blocks: list[dict]) -> bytes:
     import fitz
 
-    document = fitz.open()
-    text = f"{title}\n\n{content or ''}"
-    chunks = [text[i : i + 1800] for i in range(0, len(text), 1800)] or [title]
-    for chunk in chunks:
-        page = document.new_page(width=595, height=842)
-        page.insert_textbox(fitz.Rect(48, 48, 547, 794), chunk, fontsize=10)
-    payload = document.tobytes()
-    document.close()
+    font = fitz.Font("cjk")  # 内置 Droid Sans Fallback，覆盖中文，修复默认字体中文不显示
+    font_name = "DSF"
+    page_w, page_h = 595.0, 842.0
+    margin_x, margin_top, margin_bottom = 50.0, 56.0, 56.0
+    content_w = page_w - 2 * margin_x
+    line_height_ratio = 1.4
+    # style -> (字号, 段前间距, 默认颜色 0-1)
+    style_spec = {
+        "h1": (19.0, 0.0, (0.12, 0.16, 0.22)),
+        "h2": (14.0, 12.0, (0.12, 0.16, 0.22)),
+        "h3": (12.0, 9.0, (0.20, 0.25, 0.32)),
+        "label": (12.0, 6.0, (0.12, 0.16, 0.22)),
+        "field": (10.5, 3.0, (0.12, 0.16, 0.22)),
+        "ref": (10.0, 2.0, (0.30, 0.34, 0.40)),
+        "body": (10.5, 3.0, (0.12, 0.16, 0.22)),
+    }
+
+    doc = fitz.open()
+    state: dict = {"page": None, "y": 0.0}
+
+    def new_page() -> None:
+        page = doc.new_page(width=page_w, height=page_h)
+        page.insert_font(fontname=font_name, fontbuffer=font.buffer)
+        state["page"] = page
+        state["y"] = margin_top
+
+    def wrap(text: str, size: float) -> list[str]:
+        out: list[str] = []
+        for para in (text or "").split("\n"):
+            if para == "":
+                out.append("")
+                continue
+            current = ""
+            for ch in para:
+                if font.text_length(current + ch, fontsize=size) > content_w and current:
+                    out.append(current)
+                    current = ch
+                else:
+                    current += ch
+            out.append(current)
+        return out
+
+    new_page()
+    for block in blocks:
+        size, gap, default_color = style_spec.get(block.get("style", "body"), style_spec["body"])
+        raw = block.get("color")
+        color = tuple(c / 255 for c in raw) if raw else default_color
+        if block.get("style") == "field":
+            display = f"{block.get('label', '')}：{block.get('text', '')}"
+        elif block.get("style") == "ref":
+            display = f"• {block.get('text', '')}"
+        else:
+            display = block.get("text", "")
+
+        state["y"] += gap
+        line_h = size * line_height_ratio
+        for line in wrap(display, size) or [""]:
+            if state["y"] + line_h > page_h - margin_bottom:
+                new_page()
+            state["page"].insert_text(
+                fitz.Point(margin_x, state["y"] + size),
+                line,
+                fontname=font_name,
+                fontsize=size,
+                color=color,
+            )
+            state["y"] += line_h
+
+    payload = doc.tobytes()
+    doc.close()
     return payload
 
 
@@ -745,6 +987,13 @@ async def execute_agent(
             trace_id=trace_id,
             start_time=start_time,
             exc=exc,
+        )
+
+    if req.task_type == "contract_review":
+        retrieval_results = await _merge_enterprise_rules(
+            query=req.query,
+            tenant_id=ctx.tenant_id,
+            base_results=retrieval_results,
         )
 
     built_context = context_builder.build(retrieval_results)
@@ -1214,18 +1463,16 @@ async def export_execution_report(
     if not execution:
         raise HTTPException(status_code=404, detail="execution not found")
 
-    title = "合同审查报告"
-    content = execution.result or ""
     if format == "docx":
-        payload = _docx_bytes(title, content)
+        payload = _docx_bytes(_report_blocks(execution))
         media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         filename = _export_filename(execution, "docx")
     elif format == "pdf":
-        payload = _pdf_bytes(title, content)
+        payload = _pdf_bytes(_report_blocks(execution))
         media_type = "application/pdf"
         filename = _export_filename(execution, "pdf")
     else:
-        payload = content.encode("utf-8")
+        payload = _report_markdown(execution).encode("utf-8")
         media_type = "text/markdown; charset=utf-8"
         filename = _export_filename(execution, "md")
 

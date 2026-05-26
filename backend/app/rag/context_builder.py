@@ -10,6 +10,7 @@ class ContextBuilder:
     PRIORITY_MAP = {
         "law": 4,
         "regulation": 3,
+        "enterprise_rule": 3,
         "contract": 2,
         "case": 1,
         "guide": 0,

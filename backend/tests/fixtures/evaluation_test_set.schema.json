@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "合同合规 Agent 评估测试集",
+  "description": "评估用例集合的结构契约。法务专家只需按本结构补充内容，结构正确性由 validate_evaluation_set.py 在 CI 校验。",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "id",
+      "category",
+      "query",
+      "expected_intent",
+      "expected_agent",
+      "expected_tools",
+      "expected_references",
+      "ground_truth",
+      "difficulty",
+      "tags"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^TC-[0-9]{3,}$",
+        "description": "用例编号，形如 TC-001"
+      },
+      "category": {
+        "type": "string",
+        "enum": [
+          "contract_review",
+          "legal_search",
+          "comparison",
+          "drafting",
+          "calculation",
+          "retrieval",
+          "validation",
+          "compliance",
+          "multi_step"
+        ]
+      },
+      "query": {
+        "type": "string",
+        "minLength": 1,
+        "description": "用户自然语言输入"
+      },
+      "expected_intent": {
+        "type": "string",
+        "minLength": 1
+      },
+      "expected_agent": {
+        "type": "string",
+        "enum": [
+          "retrieval",
+          "compliance",
+          "comparison",
+          "drafting",
+          "validation",
+          "legal_search",
+          "orchestrator"
+        ]
+      },
+      "expected_tools": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "expected_references": {
+        "type": "boolean"
+      },
+      "ground_truth": {
+        "type": "string",
+        "minLength": 1,
+        "description": "期望结论要点，需由法务专家填写并复核法条引用"
+      },
+      "difficulty": {
+        "type": "string",
+        "enum": ["easy", "medium", "hard"]
+      },
+      "tags": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "notes": {
+        "type": "string",
+        "description": "可选：专家备注、引用来源、待复核标记"
+      }
+    }
+  }
+}

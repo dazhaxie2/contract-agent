@@ -21,7 +21,8 @@ services:
       - DB_READ_TARGET=hidb
       - DB_CUTOVER_PERCENT=100
       - DB_DUAL_WRITE_ENABLED=false
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
       - MILVUS_HOST=milvus
       - MILVUS_PORT=19530
       - MINIO_ENDPOINT=minio:9000
@@ -224,7 +225,7 @@ services:
       - contract-agent-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "kafka:9092"]
       interval: 15s
       timeout: 10s
       retries: 5

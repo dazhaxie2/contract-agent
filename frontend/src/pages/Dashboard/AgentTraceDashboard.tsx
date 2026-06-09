@@ -46,7 +46,7 @@ const AgentTraceDashboard: React.FC = () => {
     <div>
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
         <Title level={4} style={{ margin: 0 }}>
-          Agent 链路追踪
+          链路追踪
         </Title>
 
         <Card>

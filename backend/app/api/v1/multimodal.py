@@ -73,8 +73,7 @@ async def analyze_document(
 
     compliance_issues = []
     if compliance_report:
-        for issue in compliance_report.issues:
-            idx = compliance_report.issues.index(issue)
+        for idx, issue in enumerate(compliance_report.issues):
             rec = compliance_report.recommendations[idx] if idx < len(compliance_report.recommendations) else ""
             compliance_issues.append(
                 ComplianceIssue(

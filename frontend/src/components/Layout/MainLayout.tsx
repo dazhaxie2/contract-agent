@@ -43,7 +43,7 @@ const menuItems = [
     label: '监控大盘',
     children: [
       { key: '/dashboard', label: '系统总览' },
-      { key: '/dashboard/agent-trace', label: 'Agent 链路追踪' },
+      { key: '/dashboard/agent-trace', label: '链路追踪' },
       { key: '/dashboard/retrieval', label: '检索质量' },
     ],
   },

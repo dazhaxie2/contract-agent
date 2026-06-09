@@ -33,6 +33,7 @@ spec:
           env:
             - { name: ZOOKEEPER_CLIENT_PORT, value: "2181" }
             - { name: ZOOKEEPER_TICK_TIME, value: "2000" }
+            - { name: TZ, value: Asia/Shanghai }
           ports:
             - { containerPort: 2181, name: client }
           resources:
@@ -100,6 +101,7 @@ spec:
             - { name: KAFKA_INTER_BROKER_LISTENER_NAME, value: "PLAINTEXT" }
             - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "1" }
             - { name: KAFKA_AUTO_CREATE_TOPICS_ENABLE, value: "true" }
+            - { name: TZ, value: Asia/Shanghai }
           ports:
             - { containerPort: 9092, name: kafka }
           readinessProbe:

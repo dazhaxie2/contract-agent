@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from dateutil import tz
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,7 +39,9 @@ async def dashboard_system(
     _set_compat_headers(response, "/api/v1/system/metrics/overview")
     # Call the real metrics collector endpoint logic.
     overview = await get_metrics_overview(db)
-    timestamp = datetime.now(timezone.utc).isoformat()
+    # Use Beijing time (Asia/Shanghai) instead of UTC
+    beijing_tz = tz.gettz('Asia/Shanghai')
+    timestamp = datetime.now(beijing_tz).isoformat()
     return {
         "qps": [{"timestamp": timestamp, "value": overview["qps"]["current"]}],
         "latency_p50": [{"timestamp": timestamp, "value": overview["latency"]["p50_ms"]}],

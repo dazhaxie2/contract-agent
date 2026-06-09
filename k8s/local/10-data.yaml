@@ -36,6 +36,7 @@ spec:
             - { name: POSTGRES_PASSWORD, value: hidb123 }
             - { name: POSTGRES_INITDB_ARGS, value: "--encoding=UTF8 --locale=C" }
             - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+            - { name: TZ, value: Asia/Shanghai }
           ports:
             - { containerPort: 5432, name: pg }
           readinessProbe:
@@ -90,6 +91,8 @@ spec:
         - name: redis
           image: redis:7-alpine
           imagePullPolicy: IfNotPresent
+          env:
+            - { name: TZ, value: Asia/Shanghai }
           args:
             - redis-server
             - --appendonly
@@ -156,6 +159,7 @@ spec:
           env:
             - { name: MINIO_ROOT_USER, value: minioadmin }
             - { name: MINIO_ROOT_PASSWORD, value: minioadmin123 }
+            - { name: TZ, value: Asia/Shanghai }
           ports:
             - { containerPort: 9000, name: api }
             - { containerPort: 9001, name: console }
@@ -223,6 +227,7 @@ spec:
             - { name: ETCD_AUTO_COMPACTION_RETENTION, value: "1000" }
             - { name: ETCD_QUOTA_BACKEND_BYTES, value: "4294967296" }
             - { name: ETCD_SNAPSHOT_COUNT, value: "50000" }
+            - { name: TZ, value: Asia/Shanghai }
           ports:
             - { containerPort: 2379, name: client }
           resources:

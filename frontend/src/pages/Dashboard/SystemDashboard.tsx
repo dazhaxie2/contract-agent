@@ -58,7 +58,18 @@ const SystemDashboard: React.FC = () => {
         name: svc.name,
         status: svc.status,
         uptime: `${Math.round((svc.uptime ?? 0) * 100)}%`,
-        last_check: svc.last_check ?? '',
+        last_check: svc.last_check
+          ? new Date(svc.last_check).toLocaleString('zh-CN', {
+              timeZone: 'Asia/Shanghai',
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+              hour12: false,
+            })
+          : '',
       })),
     [services],
   );

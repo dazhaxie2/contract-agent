@@ -17,53 +17,102 @@ function formatValue(value: number) {
   return value.toFixed(2);
 }
 
+function formatTime(label: string) {
+  try {
+    const date = new Date(label);
+    if (isNaN(date.getTime())) return label;
+    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return label;
+  }
+}
+
 export const SimpleLineChart: React.FC<{ data: SimpleChartPoint[]; height?: number }> = ({ data, height = 220 }) => {
   if (!data.length) {
     return <Empty description="暂无趋势样本" />;
   }
 
   const width = 640;
-  const padding = { left: 44, right: 16, top: 18, bottom: 34 };
+  const padding = { left: 50, right: 20, top: 20, bottom: 40 };
   const values = finiteValues(data);
   const min = Math.min(0, ...values);
   const max = Math.max(1, ...values);
   const span = max - min || 1;
   const innerWidth = width - padding.left - padding.right;
   const innerHeight = height - padding.top - padding.bottom;
+  
   const points = data.map((item, index) => {
-    const x = padding.left + (data.length === 1 ? innerWidth : (index / (data.length - 1)) * innerWidth);
+    const x = padding.left + (data.length === 1 ? innerWidth / 2 : (index / (data.length - 1)) * innerWidth);
     const y = padding.top + (1 - ((item.value - min) / span)) * innerHeight;
     return { ...item, x, y };
   });
+  
   const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
+  
+  const areaPath = `${path} L ${points[points.length - 1].x} ${height - padding.bottom} L ${padding.left} ${height - padding.bottom} Z`;
+  
+  const gridLines = [];
+  for (let i = 0; i <= 4; i++) {
+    const y = padding.top + (innerHeight / 4) * i;
+    const value = max - (span / 4) * i;
+    gridLines.push(
+      <g key={i}>
+        <line
+          x1={padding.left}
+          y1={y}
+          x2={width - padding.right}
+          y2={y}
+          stroke="#f0f0f0"
+          strokeDasharray="4 4"
+        />
+        <text x={8} y={y + 4} fontSize={10} fill="#999">
+          {formatValue(value)}
+        </text>
+      </g>
+    );
+  }
 
   return (
     <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="趋势图">
-      <line x1={padding.left} y1={padding.top} x2={padding.left} y2={height - padding.bottom} stroke="#d9d9d9" />
-      <line x1={padding.left} y1={height - padding.bottom} x2={width - padding.right} y2={height - padding.bottom} stroke="#d9d9d9" />
-      <text x={8} y={padding.top + 4} fontSize={11} fill="#8c8c8c">
-        {formatValue(max)}
-      </text>
-      <text x={8} y={height - padding.bottom} fontSize={11} fill="#8c8c8c">
-        {formatValue(min)}
-      </text>
-      <path d={path} fill="none" stroke="#1677ff" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+      {gridLines}
+      <line x1={padding.left} y1={padding.top} x2={padding.left} y2={height - padding.bottom} stroke="#e8e8e8" />
+      <line x1={padding.left} y1={height - padding.bottom} x2={width - padding.right} y2={height - padding.bottom} stroke="#e8e8e8" />
+      
+      <defs>
+        <linearGradient id="areaGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor="#1677ff" stopOpacity="0.3" />
+          <stop offset="100%" stopColor="#1677ff" stopOpacity="0.05" />
+        </linearGradient>
+      </defs>
+      
+      <path d={areaPath} fill="url(#areaGradient)" />
+      
+      <path
+        d={path}
+        fill="none"
+        stroke="#1677ff"
+        strokeWidth={2.5}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+      
       {points.map((point) => (
         <g key={`${point.label}-${point.x}`}>
-          <circle cx={point.x} cy={point.y} r={3} fill="#1677ff" />
-          <title>{`${point.label}: ${formatValue(point.value)}`}</title>
+          <circle cx={point.x} cy={point.y} r={4} fill="#fff" stroke="#1677ff" strokeWidth={2} />
+          <title>{`${formatTime(point.label)}: ${formatValue(point.value)}`}</title>
         </g>
       ))}
-      {points.length ? (
+      
+      {points.length > 1 && (
         <>
-          <text x={padding.left} y={height - 10} fontSize={11} fill="#8c8c8c">
-            {points[0].label}
+          <text x={padding.left} y={height - 12} fontSize={10} fill="#999">
+            {formatTime(points[0].label)}
           </text>
-          <text x={width - padding.right} y={height - 10} fontSize={11} fill="#8c8c8c" textAnchor="end">
-            {points[points.length - 1].label}
+          <text x={width - padding.right} y={height - 12} fontSize={10} fill="#999" textAnchor="end">
+            {formatTime(points[points.length - 1].label)}
           </text>
         </>
-      ) : null}
+      )}
     </svg>
   );
 };

@@ -30,7 +30,8 @@ data:
   DB_CUTOVER_PERCENT: "100"
   DB_DUAL_WRITE_ENABLED: "false"
 
-  REDIS_URL: "redis://redis:6379/0"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
 
   MILVUS_HOST: "milvus"
   MILVUS_PORT: "19530"

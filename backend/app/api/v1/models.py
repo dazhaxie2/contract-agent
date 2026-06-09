@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_read_db, get_write_db
@@ -47,7 +47,30 @@ def _parse_uuid(value: str, field_name: str) -> uuid.UUID:
         raise HTTPException(status_code=400, detail=f"invalid {field_name}") from exc
 
 
-def _model_config_response(row: ModelConfig) -> ModelConfigResponse:
+def _model_config_response(
+    row: ModelConfig,
+    *,
+    live_metrics: dict[str, float | None] | None = None,
+) -> ModelConfigResponse:
+    """Serialize a ModelConfig row.
+
+    When ``live_metrics`` is supplied, the performance fields (avg_latency_ms /
+    avg_tokens_per_second / error_rate / quality_score) are taken from the
+    freshly-computed aggregate over ``agent_executions`` rather than the
+    static columns on ``model_configs`` (which are never updated after
+    insert and would otherwise be stale).
+    """
+    if live_metrics is not None:
+        avg_latency_ms = live_metrics.get("avg_latency_ms")
+        avg_tokens_per_second = live_metrics.get("avg_tokens_per_second")
+        error_rate = live_metrics.get("error_rate")
+        quality_score = live_metrics.get("quality_score")
+    else:
+        avg_latency_ms = row.avg_latency_ms
+        avg_tokens_per_second = row.avg_tokens_per_second
+        error_rate = row.error_rate
+        quality_score = row.quality_score
+
     return ModelConfigResponse(
         id=row.id,
         name=row.name,
@@ -74,10 +97,10 @@ def _model_config_response(row: ModelConfig) -> ModelConfigResponse:
         is_active=row.is_active,
         is_default=row.is_default,
         version=row.version,
-        avg_latency_ms=row.avg_latency_ms,
-        avg_tokens_per_second=row.avg_tokens_per_second,
-        error_rate=row.error_rate,
-        quality_score=row.quality_score,
+        avg_latency_ms=avg_latency_ms,
+        avg_tokens_per_second=avg_tokens_per_second,
+        error_rate=error_rate,
+        quality_score=quality_score,
         extra_config=row.extra_config or {},
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -235,6 +258,67 @@ def _model_metrics_summary(rows: list[AgentExecution]) -> dict[str, float]:
     }
 
 
+async def _aggregate_recent_model_metrics(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    model_ids: list[uuid.UUID],
+    since: datetime,
+) -> dict[uuid.UUID, dict[str, float | None]]:
+    """Compute live performance metrics for a batch of model_config_ids.
+
+    Returns a mapping ``{model_id: {avg_latency_ms, avg_tokens_per_second,
+    error_rate, quality_score}}`` aggregated over ``agent_executions`` from
+    ``since`` until now. Model ids with no executions in the window are
+    absent from the map — callers should fall back to the column on
+    ``model_configs`` (typically ``None``) for those.
+    """
+    if not model_ids:
+        return {}
+
+    latency_expr = func.coalesce(AgentExecution.generation_latency_ms, AgentExecution.latency_ms)
+    # avg_tokens_per_second: per-row tokens/sec, then averaged. NULLIF guards div-by-zero.
+    tps_expr = (
+        AgentExecution.total_tokens_used * 1000.0
+        / func.nullif(latency_expr, 0)
+    )
+    # Average of (relevance + factuality) / 2 across rows where at least one of them is set.
+    quality_expr = (
+        (func.coalesce(AgentExecution.relevance_score, AgentExecution.factuality_score)
+         + func.coalesce(AgentExecution.factuality_score, AgentExecution.relevance_score))
+        / 2.0
+    )
+
+    stmt = (
+        select(
+            AgentExecution.model_config_id.label("model_id"),
+            func.count().label("total"),
+            func.sum(case((AgentExecution.status == "failed", 1), else_=0)).label("failed"),
+            func.avg(latency_expr).label("avg_latency"),
+            func.avg(tps_expr).label("avg_tps"),
+            func.avg(quality_expr).label("avg_quality"),
+        )
+        .where(
+            AgentExecution.tenant_id == tenant_id,
+            AgentExecution.model_config_id.in_(model_ids),
+            AgentExecution.created_at >= since,
+        )
+        .group_by(AgentExecution.model_config_id)
+    )
+    result: dict[uuid.UUID, dict[str, float | None]] = {}
+    for row in (await db.execute(stmt)).all():
+        total = int(row.total or 0)
+        if not total:
+            continue
+        result[row.model_id] = {
+            "avg_latency_ms": round(float(row.avg_latency), 2) if row.avg_latency is not None else None,
+            "avg_tokens_per_second": round(float(row.avg_tps), 2) if row.avg_tps is not None else None,
+            "error_rate": round(float(row.failed or 0) / total, 4),
+            "quality_score": round(float(row.avg_quality), 4) if row.avg_quality is not None else None,
+        }
+    return result
+
+
 def _select_winner(primary_metric: str, control: dict[str, float], treatment: dict[str, float]) -> str:
     metric = primary_metric or "quality_score"
     control_value = float(control.get(metric) or 0.0)
@@ -312,11 +396,37 @@ async def list_ab_tests(
     db: AsyncSession = Depends(get_read_db),
     ctx: RequestContext = Depends(get_request_context),
 ):
-    """List A/B tests."""
+    """List A/B tests.
+
+    For tests in ``running`` status, control/treatment metrics are recomputed
+    live from ``agent_executions`` so the dashboard always shows the latest
+    numbers — the ``control_metrics`` / ``treatment_metrics`` JSON columns
+    are only finalized when a test is stopped.
+    """
     rows = (
         await db.scalars(select(ABTest).where(ABTest.tenant_id == ctx.tenant_id).order_by(ABTest.created_at.desc()))
     ).all()
-    return [_ab_test_response(row) for row in rows]
+
+    responses: list[ABTestResponse] = []
+    for row in rows:
+        resp = _ab_test_response(row)
+        if row.status == "running" and row.started_at:
+            control_rows = await _model_execution_rows(
+                db,
+                tenant_id=ctx.tenant_id,
+                model_config_id=row.control_config_id,
+                since=row.started_at,
+            )
+            treatment_rows = await _model_execution_rows(
+                db,
+                tenant_id=ctx.tenant_id,
+                model_config_id=row.treatment_config_id,
+                since=row.started_at,
+            )
+            resp.control_metrics = _model_metrics_summary(control_rows)
+            resp.treatment_metrics = _model_metrics_summary(treatment_rows)
+        responses.append(resp)
+    return responses
 
 
 @router.post("/ab-tests", response_model=ABTestResponse)
@@ -439,8 +549,19 @@ async def list_model_configs(
         )
     ).all()
 
+    # Compute live performance metrics from agent_executions in the last 24h.
+    # The static columns on model_configs (avg_latency_ms / error_rate / ...)
+    # are never updated after row creation and would otherwise show stale 0s.
+    since_24h = datetime.now(timezone.utc) - timedelta(hours=24)
+    metrics_map = await _aggregate_recent_model_metrics(
+        db,
+        tenant_id=ctx.tenant_id,
+        model_ids=[row.id for row in rows],
+        since=since_24h,
+    )
+
     return PageResponse(
-        items=[_model_config_response(row) for row in rows],
+        items=[_model_config_response(row, live_metrics=metrics_map.get(row.id)) for row in rows],
         total=total,
         page=page,
         page_size=page_size,
@@ -513,7 +634,15 @@ async def get_model_config(
     )
     if not row:
         raise HTTPException(status_code=404, detail="model config not found")
-    return _model_config_response(row)
+    # Live metrics in the detail view too — keep them consistent with the list.
+    since_24h = datetime.now(timezone.utc) - timedelta(hours=24)
+    metrics_map = await _aggregate_recent_model_metrics(
+        db,
+        tenant_id=ctx.tenant_id,
+        model_ids=[row.id],
+        since=since_24h,
+    )
+    return _model_config_response(row, live_metrics=metrics_map.get(row.id))
 
 
 @router.put("/{config_id}", response_model=ModelConfigResponse)

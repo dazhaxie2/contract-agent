@@ -12,6 +12,7 @@ from app.api.v1 import (
     legal,
     memory,
     models,
+    multimodal,
     prompts,
     retrieval,
     sessions,
@@ -33,3 +34,4 @@ api_router.include_router(citations.router, prefix="/citations", tags=["citation
 api_router.include_router(system.router, prefix="/system", tags=["system"])
 api_router.include_router(evaluation.router, prefix="/evaluation", tags=["evaluation"])
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
+api_router.include_router(multimodal.router, prefix="/multimodal", tags=["multimodal"])

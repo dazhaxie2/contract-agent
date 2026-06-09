@@ -89,6 +89,14 @@
       "notes": {
         "type": "string",
         "description": "可选：专家备注、引用来源、待复核标记"
+      },
+      "subcategory": {
+        "type": "string",
+        "description": "可选：细分场景，如 payment_terms、breach_liability、dispute_resolution 等"
+      },
+      "contract_type": {
+        "type": "string",
+        "description": "可选：合同类型，如 purchase、labor、lease、nda、construction、service、technology 等"
       }
     }
   }

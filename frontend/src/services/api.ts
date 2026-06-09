@@ -533,6 +533,9 @@ export const documentApi = {
     (await api.get<DocumentChunk[]>(`/documents/${id}/chunks`, { params: { full } })).data,
   getJob: async (jobId: string) => (await api.get<IngestionJob>(`/documents/jobs/${jobId}`)).data,
   delete: async (id: string) => (await api.delete(`/documents/${id}`)).data,
+  // Fetch a single document chunk by its ID with full content
+  getChunkById: async (chunkId: string) =>
+    (await api.get<DocumentChunk>(`/documents/chunks/${chunkId}`)).data,
 };
 
 // ===================== Review / Agent APIs =====================
@@ -628,6 +631,8 @@ export interface AgentExecution {
   user_feedback?: number;
   regression_case_id?: string;
 }
+
+
 
 export interface SessionInfo {
   id: string;

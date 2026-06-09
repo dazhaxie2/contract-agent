@@ -321,6 +321,24 @@ class RAGSettings(BaseSettings):
     model_config = {"env_prefix": "RAG_", "extra": "ignore"}
 
 
+class MultimodalSettings(BaseSettings):
+    enabled: bool = Field(default=True, alias="MULTIMODAL_ENABLED")
+    ocr_engine: str = Field(default="paddleocr", alias="MULTIMODAL_OCR_ENGINE")
+    signature_detection_enabled: bool = Field(default=True, alias="MULTIMODAL_SIGNATURE_ENABLED")
+    seal_detection_enabled: bool = Field(default=True, alias="MULTIMODAL_SEAL_ENABLED")
+    vl_model: str = Field(default="qwen-vl-plus", alias="MULTIMODAL_VL_MODEL")
+    vl_api_key: str = Field(default="", alias="MULTIMODAL_VL_API_KEY")
+    min_text_length_for_ocr: int = Field(default=50, alias="MULTIMODAL_MIN_TEXT_FOR_OCR")
+    seal_hsv_lower_h: int = Field(default=0, alias="MULTIMODAL_SEAL_HSV_LOWER_H")
+    seal_hsv_upper_h: int = Field(default=20, alias="MULTIMODAL_SEAL_HSV_UPPER_H")
+    seal_hsv_lower_s: int = Field(default=100, alias="MULTIMODAL_SEAL_HSV_LOWER_S")
+    seal_min_area: int = Field(default=500, alias="MULTIMODAL_SEAL_MIN_AREA")
+    seal_max_area: int = Field(default=50000, alias="MULTIMODAL_SEAL_MAX_AREA")
+    seal_circularity_threshold: float = Field(default=0.6, alias="MULTIMODAL_SEAL_CIRCULARITY")
+
+    model_config = {"env_prefix": "MULTIMODAL_", "extra": "ignore"}
+
+
 class Settings(BaseSettings):
     app_name: str = Field(default="Contract Agent", alias="APP_NAME")
     app_version: str = Field(default="1.0.0", alias="APP_VERSION")
@@ -347,6 +365,7 @@ class Settings(BaseSettings):
     circuit_breaker: CircuitBreakerSettings = CircuitBreakerSettings()
     agent: AgentSettings = AgentSettings()
     rag: RAGSettings = RAGSettings()
+    multimodal: MultimodalSettings = MultimodalSettings()
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 

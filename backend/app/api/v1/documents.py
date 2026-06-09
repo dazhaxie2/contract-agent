@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
 import uuid
+from pydantic import BaseModel, Field
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from loguru import logger
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +17,9 @@ from app.models.document import Document, DocumentChunk
 from app.models.ingestion import IngestionJob, IngestionStageEvent
 from app.services.ingestion_orchestrator import ingestion_orchestrator
 from app.services.ingestion_service import ingestion_service
+from app.services.llm_service import llm_service
+from app.services.connectors import milvus_connector
+from app.services.session_memory_service import _rough_token_count
 
 router = APIRouter()
 
@@ -290,3 +296,78 @@ async def delete_document(
     await db.delete(row)
     await db.flush()
     return {"message": "deleted"}
+
+
+class ChunkUpdateRequest(BaseModel):
+    content: str = Field(..., min_length=1)
+
+
+@router.put("/chunks/{chunk_id}")
+async def update_document_chunk(
+    chunk_id: str,
+    payload: ChunkUpdateRequest,
+    db: AsyncSession = Depends(get_write_db),
+    ctx: RequestContext = Depends(get_request_context),
+):
+    chunk_uuid = _parse_uuid(chunk_id, "chunk_id")
+    chunk = await db.scalar(
+        select(DocumentChunk).where(
+            DocumentChunk.id == chunk_uuid,
+            DocumentChunk.tenant_id == ctx.tenant_id
+        )
+    )
+    if not chunk:
+        raise HTTPException(status_code=404, detail="chunk not found")
+
+    chunk.content = payload.content
+    chunk.search_text = _normalize_search_text(payload.content)
+    chunk.token_count = _rough_token_count(payload.content)
+    chunk.vector_status = "pending"
+
+    # Regenerate vector embedding and update Milvus
+    try:
+        vectors = await llm_service.embed(texts=[payload.content])
+        if vectors:
+            emb = vectors[0]
+            upsert_row = {
+                "id": f"{ctx.tenant_id}:{chunk.id}",
+                "tenant_id": ctx.tenant_id,
+                "doc_id": str(chunk.doc_id),
+                "chunk_id": str(chunk.id),
+                "doc_type": chunk.metadata_extra.get("doc_type", ""),
+                "content": payload.content[:8000],
+                "embedding": emb,
+            }
+            ok = await milvus_connector.upsert_chunks([upsert_row])
+            if ok:
+                chunk.vector_status = "ready"
+            else:
+                chunk.vector_status = "failed"
+                logger.warning(f"Milvus upsert failed for chunk {chunk.id}")
+        else:
+            chunk.vector_status = "failed"
+            logger.warning(f"Embedding generation returned empty for chunk {chunk.id}")
+    except Exception as exc:
+        chunk.vector_status = "failed"
+        logger.warning(f"Failed to update vector for chunk {chunk.id}: {exc}")
+
+    await db.flush()
+    await db.commit()
+    return _serialize_chunk(chunk, full=True)
+@router.get("/chunks/{chunk_id}")
+async def get_document_chunk(
+    chunk_id: str,
+    db: AsyncSession = Depends(get_read_db),
+    ctx: RequestContext = Depends(get_request_context),
+):
+    """Retrieve a single document chunk by its ID with full content."""
+    chunk_uuid = _parse_uuid(chunk_id, "chunk_id")
+    chunk = await db.scalar(
+        select(DocumentChunk).where(
+            DocumentChunk.id == chunk_uuid, DocumentChunk.tenant_id == ctx.tenant_id
+        )
+    )
+    if not chunk:
+        raise HTTPException(status_code=404, detail="chunk not found")
+    return _serialize_chunk(chunk, full=True)
+

@@ -11,6 +11,8 @@ from typing import BinaryIO
 
 from loguru import logger
 
+from app.core.config import settings
+
 
 class DocumentProcessor:
     """文档预处理器"""
@@ -63,7 +65,6 @@ class DocumentProcessor:
         return content.decode("utf-8", errors="ignore"), []
 
     def _parse_pdf(self, content: bytes) -> tuple[str, list]:
-        """PDF解析 - PyMuPDF + 版面保留"""
         try:
             import fitz
             doc = fitz.open(stream=content, filetype="pdf")
@@ -74,14 +75,12 @@ class DocumentProcessor:
                 text = page.get_text("text")
                 full_text.append(text)
 
-                # 提取标题/章节结构
                 blocks = page.get_text("dict")["blocks"]
                 for block in blocks:
                     if "lines" not in block:
                         continue
                     for line in block["lines"]:
                         for span in line["spans"]:
-                            # 大号字体通常是标题
                             if span["size"] > 14:
                                 structure.append({
                                     "type": "heading",
@@ -90,10 +89,55 @@ class DocumentProcessor:
                                     "font_size": span["size"],
                                 })
             doc.close()
-            return "\n".join(full_text), structure
+
+            extracted_text = "\n".join(full_text)
+            if len(extracted_text.strip()) < settings.multimodal.min_text_length_for_ocr:
+                logger.info("Extracted text too short, attempting OCR fallback")
+                doc = fitz.open(stream=content, filetype="pdf")
+                ocr_text = self._ocr_pdf_pages(doc)
+                doc.close()
+                if ocr_text and len(ocr_text.strip()) > len(extracted_text.strip()):
+                    extracted_text = ocr_text
+
+            return extracted_text, structure
         except ImportError:
             logger.warning("PyMuPDF未安装，使用纯文本提取")
             return content.decode("utf-8", errors="ignore"), []
+
+    def _ocr_pdf_pages(self, doc) -> str:
+        try:
+            import numpy as np
+            from paddleocr import PaddleOCR
+        except ImportError:
+            logger.warning("PaddleOCR or numpy not available for OCR fallback")
+            return ""
+
+        try:
+            ocr = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
+            all_text: list[str] = []
+
+            for page in doc:
+                pix = page.get_pixmap(dpi=200)
+                img_bytes = pix.tobytes("png")
+                nparr = np.frombuffer(img_bytes, np.uint8)
+
+                try:
+                    import cv2
+                    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                except ImportError:
+                    img = nparr
+
+                result = ocr.ocr(img, cls=True)
+                if result and result[0]:
+                    for line in result[0]:
+                        if line and len(line) >= 2:
+                            text = line[1][0] if isinstance(line[1], (list, tuple)) else str(line[1])
+                            all_text.append(text)
+
+            return "\n".join(all_text)
+        except Exception as exc:
+            logger.error(f"OCR fallback failed: {exc}")
+            return ""
 
     def _parse_docx(self, content: bytes) -> tuple[str, list]:
         """DOCX解析 - python-docx"""

@@ -440,7 +440,18 @@ const ReviewWorkspace: React.FC = () => {
     setCitationOpen(true);
     setCitation(null);
     setCitationTerms(terms);
-    setCitation(await citationApi.get(id));
+    const cit = await citationApi.get(id);
+    // If citation includes chunk_id, fetch full chunk content
+    if (cit?.chunk_id) {
+      try {
+        const chunk = await documentApi.getChunkById(cit.chunk_id);
+        // replace excerpt with full content
+        cit.excerpt = (chunk as any).content;
+      } catch (e) {
+        console.warn('Failed to fetch full chunk', e);
+      }
+    }
+    setCitation(cit);
   };
 
   const submitFeedback = async () => {

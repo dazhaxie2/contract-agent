@@ -246,8 +246,30 @@ class PrometheusSettings(BaseSettings):
     enabled: bool = Field(default=True, alias="PROMETHEUS_ENABLED")
     port: int = Field(default=9090, alias="PROMETHEUS_PORT")
     path: str = Field(default="/metrics", alias="PROMETHEUS_PATH")
+    # Prometheus *query* server — separate from the exposed /metrics path.
+    # Empty means "no Prometheus configured" → deployment live metrics
+    # gracefully degrade to None (UI shows "未接入监控").
+    query_url: str = Field(default="", alias="PROMETHEUS_QUERY_URL")
+    query_timeout_seconds: float = Field(default=2.0, ge=0.1, le=30.0, alias="PROMETHEUS_QUERY_TIMEOUT")
+    deployment_label: str = Field(default="deployment", alias="PROMETHEUS_DEPLOYMENT_LABEL")
 
     model_config = {"env_prefix": "PROMETHEUS_", "extra": "ignore"}
+
+
+class KubernetesSettings(BaseSettings):
+    """K8s API access for live deployment status.
+
+    Empty ``api_url`` disables the integration; readyReplicas then falls
+    back to the pseudo-calc (replicas if running+healthy else 0).
+    """
+
+    api_url: str = Field(default="", alias="K8S_API_URL")
+    namespace: str = Field(default="default", alias="K8S_NAMESPACE")
+    bearer_token: str = Field(default="", alias="K8S_BEARER_TOKEN")
+    verify_ssl: bool = Field(default=True, alias="K8S_VERIFY_SSL")
+    timeout_seconds: float = Field(default=2.0, ge=0.1, le=30.0, alias="K8S_TIMEOUT")
+
+    model_config = {"env_prefix": "K8S_", "extra": "ignore"}
 
 
 class SecuritySettings(BaseSettings):
@@ -360,6 +382,7 @@ class Settings(BaseSettings):
     llm: AliyunLLMSettings = AliyunLLMSettings()
     tracing: TracingSettings = TracingSettings()
     prometheus: PrometheusSettings = PrometheusSettings()
+    kubernetes: KubernetesSettings = KubernetesSettings()
     security: SecuritySettings = SecuritySettings()
     rate_limit: RateLimitSettings = RateLimitSettings()
     circuit_breaker: CircuitBreakerSettings = CircuitBreakerSettings()

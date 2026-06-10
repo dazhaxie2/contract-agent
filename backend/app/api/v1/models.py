@@ -24,6 +24,10 @@ from app.schemas.model_config import (
     ModelDeploymentCreate,
     ModelDeploymentResponse,
 )
+from app.services.deployment_metrics_service import (
+    DeploymentLiveMetrics,
+    fetch_deployment_live_metrics,
+)
 
 router = APIRouter()
 
@@ -107,7 +111,46 @@ def _model_config_response(
     )
 
 
-def _deployment_response(row: ModelDeployment) -> ModelDeploymentResponse:
+def _deployment_response(
+    row: ModelDeployment,
+    *,
+    live_metrics: DeploymentLiveMetrics | None = None,
+) -> ModelDeploymentResponse:
+    """Serialize a ModelDeployment row.
+
+    When ``live_metrics`` is supplied, fields populated from Prometheus /
+    K8s (current_qps / avg_latency_ms / p99_latency_ms / cpu_usage /
+    memory_usage / ready_replicas) override the static DB columns. A
+    ``None`` field inside ``live_metrics`` means "source unreachable" —
+    we fall back to the DB column for QPS / latency, leave CPU / MEM as
+    ``None`` (UI shows "未接入监控"), and degrade ready_replicas to the
+    legacy pseudo-calc so the副本 column keeps rendering.
+    """
+    qps = row.current_qps
+    avg_lat = row.avg_latency_ms
+    p99_lat = row.p99_latency_ms
+    cpu_usage: float | None = None
+    memory_usage: float | None = None
+    ready_replicas: int | None = None
+
+    if live_metrics is not None:
+        if live_metrics.current_qps is not None:
+            qps = live_metrics.current_qps
+        if live_metrics.avg_latency_ms is not None:
+            avg_lat = live_metrics.avg_latency_ms
+        if live_metrics.p99_latency_ms is not None:
+            p99_lat = live_metrics.p99_latency_ms
+        cpu_usage = live_metrics.cpu_usage
+        memory_usage = live_metrics.memory_usage
+        ready_replicas = live_metrics.ready_replicas
+
+    if ready_replicas is None:
+        ready_replicas = (
+            row.replicas
+            if row.status == "running" and row.health_status == "healthy"
+            else 0
+        )
+
     return ModelDeploymentResponse(
         id=row.id,
         model_config_id=row.model_config_id,
@@ -119,13 +162,31 @@ def _deployment_response(row: ModelDeployment) -> ModelDeploymentResponse:
         gpu_count=row.gpu_count,
         status=row.status,
         health_status=row.health_status,
-        current_qps=row.current_qps,
+        current_qps=qps,
         max_qps=row.max_qps,
-        avg_latency_ms=row.avg_latency_ms,
-        p99_latency_ms=row.p99_latency_ms,
+        avg_latency_ms=avg_lat,
+        p99_latency_ms=p99_lat,
+        ready_replicas=ready_replicas,
+        cpu_usage=cpu_usage,
+        memory_usage=memory_usage,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+async def _safe_live_metrics(
+    rows: list[ModelDeployment],
+) -> dict[uuid.UUID, DeploymentLiveMetrics]:
+    """Best-effort live-metrics batch. Never raises.
+
+    The service is already exception-safe internally, but this extra
+    guard means a programming error or import-time failure cannot crash
+    the deployment-listing endpoints.
+    """
+    try:
+        return await fetch_deployment_live_metrics(rows)
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def _ab_test_response(row: ABTest) -> ABTestResponse:
@@ -344,7 +405,12 @@ async def list_deployments(
         query = query.where(ModelDeployment.model_config_id == _parse_uuid(model_config_id, "model_config_id"))
 
     rows = (await db.scalars(query.order_by(ModelDeployment.created_at.desc()))).all()
-    return [_deployment_response(row) for row in rows]
+    rows_list = list(rows)
+    live_map = await _safe_live_metrics(rows_list)
+    return [
+        _deployment_response(row, live_metrics=live_map.get(row.id))
+        for row in rows_list
+    ]
 
 
 @router.post("/deployments", response_model=ModelDeploymentResponse)
@@ -831,6 +897,18 @@ async def deploy_model_compat(
 
     _set_compat_headers(response, "/api/v1/models/deployments")
 
+    live_map = await _safe_live_metrics([deployment])
+    live = live_map.get(deployment.id) or DeploymentLiveMetrics()
+
+    if live.ready_replicas is not None:
+        ready_replicas = live.ready_replicas
+    else:
+        ready_replicas = (
+            deployment.replicas
+            if deployment.status == "running" and deployment.health_status == "healthy"
+            else 0
+        )
+
     return {
         "id": str(deployment.id),
         "model_id": str(model.id),
@@ -839,9 +917,11 @@ async def deploy_model_compat(
         "gpu_type": deployment.gpu_type or "",
         "gpu_count": deployment.gpu_count,
         "replicas": deployment.replicas,
-        "ready_replicas": deployment.replicas if deployment.status == "running" and deployment.health_status == "healthy" else 0,
-        "cpu_usage": None,
-        "memory_usage": None,
+        "ready_replicas": ready_replicas,
+        "cpu_usage": live.cpu_usage,
+        "memory_usage": live.memory_usage,
+        "current_qps": live.current_qps if live.current_qps is not None else deployment.current_qps,
+        "p99_latency_ms": live.p99_latency_ms if live.p99_latency_ms is not None else deployment.p99_latency_ms,
         "created_at": deployment.created_at.isoformat(),
     }
 

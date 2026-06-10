@@ -121,6 +121,11 @@ class ModelDeploymentResponse(BaseModel):
     max_qps: float
     avg_latency_ms: float
     p99_latency_ms: float
+    # Live-pulled runtime metrics; None means the underlying source
+    # (Prometheus / K8s) is unreachable or unconfigured.
+    ready_replicas: int | None = None
+    cpu_usage: float | None = None
+    memory_usage: float | None = None
     created_at: datetime
     updated_at: datetime
 

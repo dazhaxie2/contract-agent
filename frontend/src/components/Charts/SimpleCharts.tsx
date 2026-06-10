@@ -21,7 +21,26 @@ function formatTime(label: string) {
   try {
     const date = new Date(label);
     if (isNaN(date.getTime())) return label;
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    const hh = String(date.getHours()).padStart(2, '0');
+    const mm = String(date.getMinutes()).padStart(2, '0');
+    const ss = String(date.getSeconds()).padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
+  } catch {
+    return label;
+  }
+}
+
+function formatFullTime(label: string) {
+  try {
+    const date = new Date(label);
+    if (isNaN(date.getTime())) return label;
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    const hh = String(date.getHours()).padStart(2, '0');
+    const mm = String(date.getMinutes()).padStart(2, '0');
+    const ss = String(date.getSeconds()).padStart(2, '0');
+    return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
   } catch {
     return label;
   }
@@ -99,18 +118,24 @@ export const SimpleLineChart: React.FC<{ data: SimpleChartPoint[]; height?: numb
       {points.map((point) => (
         <g key={`${point.label}-${point.x}`}>
           <circle cx={point.x} cy={point.y} r={4} fill="#fff" stroke="#1677ff" strokeWidth={2} />
-          <title>{`${formatTime(point.label)}: ${formatValue(point.value)}`}</title>
+          <title>{formatValue(point.value)}</title>
         </g>
       ))}
       
       {points.length > 1 && (
         <>
-          <text x={padding.left} y={height - 12} fontSize={10} fill="#999">
-            {formatTime(points[0].label)}
-          </text>
-          <text x={width - padding.right} y={height - 12} fontSize={10} fill="#999" textAnchor="end">
-            {formatTime(points[points.length - 1].label)}
-          </text>
+          {points.filter((_, index) => index % Math.max(1, Math.floor(points.length / 5)) === 0).map((point, index) => (
+            <text
+              key={index}
+              x={point.x}
+              y={height - 12}
+              fontSize={10}
+              fill="#999"
+              textAnchor="middle"
+            >
+              {formatFullTime(point.label)}
+            </text>
+          ))}
         </>
       )}
     </svg>

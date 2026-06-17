@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Iterable
 
 from loguru import logger
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.conversation import ConversationMessage, ConversationSession
@@ -562,13 +562,13 @@ class SessionMemoryService:
         tenant_id: str,
     ) -> dict:
         await db.execute(
-            MemoryFact.__table__.delete().where(
+            delete(MemoryFact).where(
                 MemoryFact.session_id == session_id,
                 MemoryFact.tenant_id == tenant_id,
             )
         )
         await db.execute(
-            MemorySummary.__table__.delete().where(
+            delete(MemorySummary).where(
                 MemorySummary.session_id == session_id,
                 MemorySummary.tenant_id == tenant_id,
             )

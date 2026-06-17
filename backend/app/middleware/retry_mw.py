@@ -68,7 +68,9 @@ class RetryMiddleware(BaseHTTPMiddleware):
                 else:
                     raise
 
-        if last_response:
+        if last_response is not None:
             last_response.headers["X-Retry-Count"] = str(self.MAX_RETRIES)
             last_response.headers["X-Retry-Exhausted"] = "true"
-        return last_response
+            return last_response
+        # 理论不可达（重试耗尽时最后一次异常已 raise），兜底返回 503 以满足返回契约
+        return Response(status_code=503)

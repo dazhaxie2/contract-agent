@@ -7,7 +7,7 @@ import hashlib
 import random
 import time
 from difflib import SequenceMatcher
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 from loguru import logger
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
@@ -354,7 +354,7 @@ class AliyunLLMService:
                         for item in response.output["results"]
                     ]
 
-                scored = []
+                scored: list[dict[str, Any]] = []
                 q = query.lower()
                 for i, doc in enumerate(documents):
                     score = SequenceMatcher(None, q[:400], (doc or "").lower()[:400]).ratio()

@@ -46,7 +46,7 @@ if HAS_PROMETHEUS:
     LLM_TOKEN_COUNT = Counter(
         "contract_agent_llm_tokens_total",
         "大模型Token消耗",
-        ["model", "type"],  # type: input/output
+        ["model", "type"],  # 取值: input / output
     )
     LLM_LATENCY = Histogram(
         "contract_agent_llm_duration_seconds",

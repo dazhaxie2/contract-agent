@@ -27,8 +27,8 @@ on:
       - "backend/tests/fixtures/evaluation_test_set.json"
 
 jobs:
-  lint-and-typecheck:
-    name: Lint + Type Check
+  validate-eval-set:
+    name: Validate Evaluation Set
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,13 +37,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      # 评估集校验只需 jsonschema；Ruff/mypy 全量检查已由 ci.yml 的 lint 作业负责，此处不再重复
       - name: Install dependencies
-        run: |
-          pip install ruff
-          pip install -r backend/requirements.txt
-
-      - name: Ruff lint
-        run: cd backend && ruff check app/
+        run: pip install jsonschema
 
       - name: Validate evaluation test set structure
         run: cd backend && python scripts/validate_evaluation_set.py
@@ -51,7 +47,7 @@ jobs:
   evaluate:
     name: Agent Evaluation
     runs-on: ubuntu-latest
-    needs: lint-and-typecheck
+    needs: validate-eval-set
     steps:
       - uses: actions/checkout@v4
 

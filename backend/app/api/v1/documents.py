@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import uuid
 from pydantic import BaseModel, Field
 
@@ -16,7 +15,7 @@ from app.core.request_context import RequestContext, resolve_request_context
 from app.models.document import Document, DocumentChunk
 from app.models.ingestion import IngestionJob, IngestionStageEvent
 from app.services.ingestion_orchestrator import ingestion_orchestrator
-from app.services.ingestion_service import ingestion_service
+from app.services.ingestion_service import _normalize_search_text, ingestion_service
 from app.services.llm_service import llm_service
 from app.services.connectors import milvus_connector
 from app.services.session_memory_service import _rough_token_count

@@ -1,0 +1,21 @@
+# 本地提交前自动跑 Ruff，把未使用导入、未定义名等低级错误拦在 push 之前，
+# 而不是等推到 CI 才发现（在 main 尚未开启分支保护时尤其重要）。
+#
+# 启用：
+#   pip install pre-commit
+#   pre-commit install
+# 手动全量跑：
+#   pre-commit run --all-files
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.0
+    hooks:
+      # 提交前自动修复 Ruff lint 问题（F401 未使用导入、F821 未定义名等）
+      - id: ruff
+        args: [--fix]
+        files: ^backend/
+      # 可选：统一代码格式。项目当前未启用 ruff format，首次启用前建议先单独执行一次
+      #   ruff format backend/
+      # 并独立提交，避免格式化改动与业务改动混在一起产生巨大 diff。确认后取消注释即可。
+      # - id: ruff-format
+      #   files: ^backend/

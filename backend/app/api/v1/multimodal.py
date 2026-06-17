@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from loguru import logger
 
 from app.core.request_context import RequestContext, resolve_request_context
 from app.schemas.multimodal import (

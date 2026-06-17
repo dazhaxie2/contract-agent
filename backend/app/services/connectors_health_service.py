@@ -26,7 +26,7 @@ class ConnectorsHealthService:
         services: dict[str, dict] = {}
         healthy = True
         for item in checks:
-            if isinstance(item, Exception):
+            if isinstance(item, BaseException):
                 healthy = False
                 name = f"connector_{len(services) + 1}"
                 services[name] = {"name": name, "ok": False, "detail": str(item), "latency_ms": 0.0}

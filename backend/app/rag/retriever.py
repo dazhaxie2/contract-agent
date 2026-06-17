@@ -6,6 +6,7 @@ import asyncio
 import re
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
@@ -66,7 +67,7 @@ def _document_filter_ids(filters: dict) -> list[uuid.UUID]:
     return doc_ids
 
 
-def _uuid_values(values: list[object]) -> list[uuid.UUID]:
+def _uuid_values(values: Sequence[object]) -> list[uuid.UUID]:
     parsed: list[uuid.UUID] = []
     for value in values:
         if isinstance(value, uuid.UUID):
@@ -211,7 +212,7 @@ class HybridRetriever:
             ("keyword", keyword_results),
             ("graph", graph_results),
         ]:
-            if isinstance(channel_result, Exception):
+            if isinstance(channel_result, BaseException):
                 channel_errors.append({"channel": channel_name, "error": str(channel_result)})
                 continue
             if channel_name == "vector":
@@ -479,9 +480,9 @@ class HybridRetriever:
                     results[idx].rerank_score = float(item.get("score", results[idx].score))
         except Exception as exc:
             logger.debug(f"fine rerank fallback: {exc}")
-            for item in results:
-                if item.rerank_score is None:
-                    item.rerank_score = item.score
+            for hit in results:
+                if hit.rerank_score is None:
+                    hit.rerank_score = hit.score
         ranked = sorted(results, key=lambda x: float(x.rerank_score or 0.0), reverse=True)
         return ranked[: settings.rag.fine_rerank_top_k]
 

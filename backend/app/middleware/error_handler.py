@@ -15,7 +15,7 @@ from app.middleware.request_id import get_request_id
 class AppException(Exception):
     """应用自定义异常基类"""
 
-    def __init__(self, code: int, message: str, detail: str = "", data: dict = None):
+    def __init__(self, code: int, message: str, detail: str = "", data: dict | None = None):
         self.code = code
         self.message = message
         self.detail = detail

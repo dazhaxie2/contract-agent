@@ -39,10 +39,9 @@ jobs:
       - name: Run mypy (type check)
         if: matrix.name == 'backend'
         working-directory: ${{ matrix.working-directory }}
-        # 存量项目渐进引入 mypy：当前仍有已知类型债务，先不阻断 CI，
-        # 待逐步清理后移除 continue-on-error，使其成为硬门禁
-        continue-on-error: true
-        run: pip install mypy && mypy app/
+        # 类型债务已清零（mypy app/ 0 errors），类型检查作为硬门禁阻断合并。
+        # 锁定 mypy 版本，避免新版本规则变动导致 main 无故变红（如需升级请本地复核后同步更新）。
+        run: pip install mypy==1.17.1 && mypy app/
 
       - name: Setup Node
         if: matrix.name == 'frontend'

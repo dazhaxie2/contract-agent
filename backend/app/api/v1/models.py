@@ -269,7 +269,7 @@ async def _model_execution_rows(
     return list(rows)
 
 
-def _model_metrics_timeseries(rows: list[AgentExecution], *, since: datetime, bucket_count: int) -> dict[str, list]:
+def _model_metrics_timeseries(rows: list[AgentExecution], *, since: datetime, bucket_count: int) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     total_seconds = max(1.0, (now - since).total_seconds())
     bucket_seconds = max(1.0, total_seconds / bucket_count)
@@ -948,4 +948,4 @@ async def undeploy_model_compat(
 
     _set_compat_headers(response, "/api/v1/models/deployments")
 
-    return {"message": "undeployed", "updated": int(result.rowcount or 0)}
+    return {"message": "undeployed", "updated": int(getattr(result, "rowcount", 0) or 0)}

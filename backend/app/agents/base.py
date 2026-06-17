@@ -7,6 +7,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from enum import Enum
+from typing import Any
 
 from loguru import logger
 
@@ -83,7 +84,7 @@ class BaseAgent(ABC):
     async def execute(self, query: str, context: dict | None = None) -> AgentResult:
         started = time.perf_counter()
         steps: list[AgentStep] = []
-        messages = [{"role": "system", "content": self._build_system_prompt()}]
+        messages: list[dict[str, Any]] = [{"role": "system", "content": self._build_system_prompt()}]
 
         if context:
             context_text = self._format_context(context)

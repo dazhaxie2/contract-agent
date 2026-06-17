@@ -150,8 +150,9 @@ class DocumentProcessor:
 
             for para in doc.paragraphs:
                 full_text.append(para.text)
-                if para.style.name.startswith("Heading"):
-                    level = int(para.style.name.replace("Heading ", "") or "1")
+                style_name = (para.style.name if para.style else "") or ""
+                if style_name.startswith("Heading"):
+                    level = int(style_name.replace("Heading ", "") or "1")
                     structure.append({
                         "type": f"h{level}",
                         "text": para.text.strip(),
@@ -217,7 +218,7 @@ class DocumentProcessor:
                         "type": level_name,
                         "level": level_num,
                         "number": match.group(1),
-                        "title": match.group(2).strip() if match.lastindex >= 2 else "",
+                        "title": match.group(2).strip() if (match.lastindex or 0) >= 2 else "",
                         "content": line,
                     })
                     break

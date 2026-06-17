@@ -13,7 +13,7 @@ try:
 
     HAS_REDIS = True
 except Exception:  # pragma: no cover - import fallback
-    Redis = object  # type: ignore[assignment]
+    Redis = object  # type: ignore[assignment, misc]
     HAS_REDIS = False
 
 

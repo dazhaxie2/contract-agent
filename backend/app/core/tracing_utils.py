@@ -14,7 +14,7 @@ try:
     HAS_OTEL = True
 except Exception:  # pragma: no cover - optional runtime dependency failures.
     trace = None  # type: ignore[assignment]
-    StatusCode = None  # type: ignore[assignment]
+    StatusCode = None  # type: ignore[assignment, misc]
     HAS_OTEL = False
 
 

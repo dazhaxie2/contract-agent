@@ -26,7 +26,7 @@ class IngestionJob(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     result: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    error_message: Mapped[str] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -24,8 +24,8 @@ class Document(Base):
     mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
     # 元数据
     issuing_authority: Mapped[str] = mapped_column(String(256), nullable=True)
-    effective_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    expiry_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    effective_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expiry_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     applicable_industry: Mapped[list] = mapped_column(JSON, default=list)
     applicable_region: Mapped[list] = mapped_column(JSON, default=list)
     version: Mapped[str] = mapped_column(String(32), nullable=True)

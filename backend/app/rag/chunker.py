@@ -52,9 +52,9 @@ class DocumentChunker:
         """结构化分块 - 适用于法律法规"""
         chunks = []
         lines = text.split('\n')
-        current_chunk_lines = []
+        current_chunk_lines: list[str] = []
         current_type = "content"
-        current_path_stack = []  # [(level, name)]
+        current_path_stack: list[tuple[int, str]] = []  # [(level, name)]
 
         for line in lines:
             line_stripped = line.strip()
@@ -153,7 +153,7 @@ class DocumentChunker:
         overlap = settings.rag.chunk_overlap
 
         paragraphs = re.split(r'\n{2,}', text)
-        current_chunk = []
+        current_chunk: list[str] = []
         current_size = 0
 
         for para in paragraphs:
@@ -210,7 +210,7 @@ class DocumentChunker:
         sub_chunks = []
 
         sentences = re.split(r'([。；;！？!?])', text)
-        current = []
+        current: list[str] = []
         current_len = 0
 
         for i in range(0, len(sentences), 2):

@@ -286,7 +286,7 @@ async def check_database_health(
         "citation_records": ["idx_citation_tenant_code"],
     }
 
-    result = {
+    result: dict[str, Any] = {
         "write": {"ok": False, "missing_tables": [], "missing_indexes": {}},
         "read": {"ok": False, "missing_tables": [], "missing_indexes": {}},
         "legacy_write": {"ok": True},
@@ -314,7 +314,7 @@ async def check_database_health(
     try:
         read_catalog = await _inspect_engine(read_engine)
         missing_tables = sorted(set(required_tables) - read_catalog["tables"])
-        missing_indexes: dict[str, list[str]] = {}
+        missing_indexes = {}
         for table, idx_names in required_indexes.items():
             existing = read_catalog["indexes"].get(table, set())
             missing = [idx for idx in idx_names if idx not in existing]

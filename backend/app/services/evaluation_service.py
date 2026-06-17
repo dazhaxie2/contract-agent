@@ -75,6 +75,8 @@ class EvaluationService:
             logger.error(f"Evaluation scoring failed: {exc}")
             return {"error": str(exc)}
 
+        return {"error": "no valid score JSON in judge output"}
+
     async def batch_score(
         self,
         db: AsyncSession,

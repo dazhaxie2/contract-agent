@@ -141,7 +141,7 @@ async def _load_recent_retrieval_metrics(db: AsyncSession, since: datetime) -> d
 
 def _risk_items(metadata: dict[str, Any]) -> list[dict[str, Any]]:
     report = metadata.get("review_report") or {}
-    items = report.get("risk_items") if isinstance(report, dict) else []
+    items = (report.get("risk_items") or []) if isinstance(report, dict) else []
     return [item for item in items if isinstance(item, dict)]
 
 

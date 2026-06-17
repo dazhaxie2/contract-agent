@@ -104,7 +104,7 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
 
         if response.status_code == 200:
             body = b""
-            async for chunk in response.body_iterator:
+            async for chunk in response.body_iterator:  # type: ignore[attr-defined]
                 if isinstance(chunk, str):
                     chunk = chunk.encode()
                 body += chunk

@@ -56,7 +56,7 @@ class DataMaskingMiddleware(BaseHTTPMiddleware):
             return response
 
         body = b""
-        async for chunk in response.body_iterator:
+        async for chunk in response.body_iterator:  # type: ignore[attr-defined]
             if isinstance(chunk, str):
                 chunk = chunk.encode("utf-8")
             body += chunk

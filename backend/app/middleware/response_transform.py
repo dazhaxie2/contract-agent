@@ -42,7 +42,7 @@ class ResponseTransformMiddleware(BaseHTTPMiddleware):
 
         # 读取原始响应
         body = b""
-        async for chunk in response.body_iterator:
+        async for chunk in response.body_iterator:  # type: ignore[attr-defined]
             if isinstance(chunk, str):
                 chunk = chunk.encode()
             body += chunk

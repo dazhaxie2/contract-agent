@@ -68,13 +68,6 @@ class _IntentRoutingTool(Tool):
         contract_output = build_sub_agent_output(contract_input, result)
 
         return json.dumps(contract_output.model_dump(mode="json"), ensure_ascii=False)
-        sub_context["agent_contract"] = contract_input.model_dump(mode="json")
-
-        agent = agent_cls()
-        result = await agent.execute(query=task_description, context=sub_context)
-        contract_output = build_sub_agent_output(contract_input, result)
-
-        return json.dumps(contract_output.model_dump(mode="json"), ensure_ascii=False)
 
 
 class _DirectSearchTool(Tool):
